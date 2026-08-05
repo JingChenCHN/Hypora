@@ -1,0 +1,213 @@
+@use 'sass:map';
+@use 'mixins' as *;
+
+// ════════════════════════════════════════════════════════════════
+// Hypora 主题令牌 · 单一事实源（设计文档 §4 D6 / §14.2）
+// ── 唯一令牌源：src/themes/index.scss
+// ── 派生：light / dark / system / high-contrast-light / high-contrast-dark
+// ── 约定：组件禁止硬编码颜色，一律取 var(--hypora-*)。
+// ── Yaru 设计语言：accent #E95420 / aubergine #2C001E
+// ════════════════════════════════════════════════════════════════
+
+// ————— 五个主题的令牌值（单一 map，零成本跟随）—————
+$themes: (
+  light: (
+    'accent': #E95420,
+    'accent-hover': #D6441B,
+    'accent-active': #B8401A,
+    'accent-contrast': #FFFFFF,
+    'accent-soft': rgba(233, 84, 32, 0.12),
+    'bg': #F6F5F4,
+    'bg-elevated': #FFFFFF,
+    'bg-inset': #E9E7E5,
+    'bg-hover': rgba(0, 0, 0, 0.06),
+    'fg': #1A1A1A,
+    'fg-muted': #555555,
+    'fg-subtle': #8B8884,
+    'fg-on-accent': #FFFFFF,
+    'border': #D9D5D2,
+    'border-strong': #B8B3AF,
+    'selection': rgba(233, 84, 32, 0.22),
+    'code-bg': #F0EEEB,
+    'code-fg': #2C2C2C,
+    'link': #00698D,
+    'success': #0E8420,
+    'warning': #B26A00,
+    'danger': #C7162B,
+    'info': #00698D,
+    'aubergine': #772953,
+    'titlebar-bg': #FFFFFF,
+    'shadow': 0 1px 3px rgba(0, 0, 0, 0.12),
+    'focus-ring': rgba(233, 84, 32, 0.45),
+    'block-hover': rgba(233, 84, 32, 0.06),
+    'mermaid-border': #D9D5D2,
+    'scroll-thumb': rgba(0, 0, 0, 0.25),
+    'scroll-track': rgba(0, 0, 0, 0.04),
+    'table-head': #ECEAE8,
+    'ai-bubble': rgba(233, 84, 32, 0.08),
+  ),
+  dark: (
+    'accent': #E95420,
+    'accent-hover': #FF6D3B,
+    'accent-active': #F26D3A,
+    'accent-contrast': #FFFFFF,
+    'accent-soft': rgba(233, 84, 32, 0.24),
+    'bg': #2C001E,
+    'bg-elevated': #3A2436,
+    'bg-inset': #1D0014,
+    'bg-hover': rgba(255, 255, 255, 0.06),
+    'fg': #F6F5F4,
+    'fg-muted': #C4B9C0,
+    'fg-subtle': #8E7E88,
+    'fg-on-accent': #FFFFFF,
+    'border': #4D3C49,
+    'border-strong': #6A5564,
+    'selection': rgba(233, 84, 32, 0.38),
+    'code-bg': #3A2436,
+    'code-fg': #E6DDE3,
+    'link': #8FD3FF,
+    'success': #30B544,
+    'warning': #F9C445,
+    'danger': #FF7A85,
+    'info': #8FD3FF,
+    'aubergine': #A34F8C,
+    'titlebar-bg': #2C001E,
+    'shadow': 0 1px 4px rgba(0, 0, 0, 0.45),
+    'focus-ring': rgba(233, 84, 32, 0.55),
+    'block-hover': rgba(233, 84, 32, 0.12),
+    'mermaid-border': #6A5564,
+    'scroll-thumb': rgba(255, 255, 255, 0.25),
+    'scroll-track': rgba(255, 255, 255, 0.05),
+    'table-head': #43303F,
+    'ai-bubble': rgba(233, 84, 32, 0.16),
+  ),
+  'high-contrast-light': (
+    'accent': #B03611,
+    'accent-hover': #8E2A0C,
+    'accent-active': #6E2009,
+    'accent-contrast': #FFFFFF,
+    'accent-soft': rgba(176, 54, 17, 0.18),
+    'bg': #FFFFFF,
+    'bg-elevated': #F2F2F2,
+    'bg-inset': #E0E0E0,
+    'bg-hover': rgba(0, 0, 0, 0.10),
+    'fg': #000000,
+    'fg-muted': #262626,
+    'fg-subtle': #595959,
+    'fg-on-accent': #FFFFFF,
+    'border': #767676,
+    'border-strong': #000000,
+    'selection': rgba(0, 120, 215, 0.35),
+    'code-bg': #EFEFEF,
+    'code-fg': #000000,
+    'link': #003057,
+    'success': #005A1A,
+    'warning': #6B4A00,
+    'danger': #A80016,
+    'info': #003057,
+    'aubergine': #5C1F43,
+    'titlebar-bg': #FFFFFF,
+    'shadow': 0 1px 3px rgba(0, 0, 0, 0.2),
+    'focus-ring': #0078D7,
+    'block-hover': rgba(176, 54, 17, 0.10),
+    'mermaid-border': #767676,
+    'scroll-thumb': rgba(0, 0, 0, 0.45),
+    'scroll-track': rgba(0, 0, 0, 0.06),
+    'table-head': #E6E6E6,
+    'ai-bubble': rgba(176, 54, 17, 0.12),
+  ),
+  'high-contrast-dark': (
+    'accent': #FF8C66,
+    'accent-hover': #FFAA8A,
+    'accent-active': #FF6D3B,
+    'accent-contrast': #1A0000,
+    'accent-soft': rgba(255, 140, 102, 0.20),
+    'bg': #000000,
+    'bg-elevated': #101010,
+    'bg-inset': #050505,
+    'bg-hover': rgba(255, 255, 255, 0.10),
+    'fg': #FFFFFF,
+    'fg-muted': #D6D6D6,
+    'fg-subtle': #A0A0A0,
+    'fg-on-accent': #1A0000,
+    'border': #C0C0C0,
+    'border-strong': #FFFFFF,
+    'selection': rgba(255, 140, 102, 0.45),
+    'code-bg': #101010,
+    'code-fg': #FFFFFF,
+    'link': #A6E3FF,
+    'success': #4ADE80,
+    'warning': #FFE066,
+    'danger': #FF8A95,
+    'info': #A6E3FF,
+    'aubergine': #D0A0C8,
+    'titlebar-bg': #000000,
+    'shadow': 0 1px 4px rgba(0, 0, 0, 0.8),
+    'focus-ring': #FF8C66,
+    'block-hover': rgba(255, 140, 102, 0.12),
+    'mermaid-border': #C0C0C0,
+    'scroll-thumb': rgba(255, 255, 255, 0.5),
+    'scroll-track': rgba(255, 255, 255, 0.08),
+    'table-head': #1A1A1A,
+    'ai-bubble': rgba(255, 140, 102, 0.16),
+  ),
+);
+
+@mixin apply-theme($vars) {
+  @each $name, $value in $vars {
+    --hypora-#{$name}: #{$value};
+  }
+}
+
+// ————— 全局设计令牌（不随主题变化）—————
+:root {
+  --hypora-radius-sm: 4px;
+  --hypora-radius: 6px;
+  --hypora-radius-lg: 10px;
+  --hypora-radius-full: 999px;
+  --hypora-font-sans: 'Ubuntu', system-ui, -apple-system, 'Segoe UI', 'Noto Sans SC', sans-serif;
+  --hypora-font-mono: 'Ubuntu Mono', ui-monospace, 'Cascadia Code', Consolas, 'SFMono-Regular', monospace;
+  --hypora-space-1: 4px;
+  --hypora-space-2: 8px;
+  --hypora-space-3: 12px;
+  --hypora-space-4: 16px;
+  --hypora-space-5: 24px;
+  --hypora-space-6: 32px;
+  --hypora-transition-fast: 100ms ease;
+  --hypora-transition: 160ms ease;
+  --hypora-titlebar-h: 40px;
+  --hypora-toolbar-h: 40px;
+  --hypora-statusbar-h: 28px;
+  --hypora-z-toolbar: 100;
+  --hypora-z-titlebar: 110;
+  --hypora-z-popover: 300;
+  --hypora-z-modal: 500;
+  --hypora-z-toast: 600;
+}
+
+// ————— 主题应用（预应用防闪屏：main.ts 同步设置 data-theme）—————
+// 无 data-theme 时回退 light，避免 JS 就绪前的白屏/黑闪
+:root,
+:root:not([data-theme]) {
+  @include apply-theme(map.get($themes, 'light'));
+}
+:root[data-theme='light'] {
+  @include apply-theme(map.get($themes, 'light'));
+}
+:root[data-theme='dark'] {
+  @include apply-theme(map.get($themes, 'dark'));
+}
+:root[data-theme='high-contrast-light'] {
+  @include apply-theme(map.get($themes, 'high-contrast-light'));
+}
+:root[data-theme='high-contrast-dark'] {
+  @include apply-theme(map.get($themes, 'high-contrast-dark'));
+}
+:root[data-theme='system'] {
+  @include apply-theme(map.get($themes, 'light'));
+}
+@media (prefers-color-scheme: dark) {
+  :root[data-theme='system'] {
+    @include apply-theme(map.get($themes, 'dark'));
+  }
+}

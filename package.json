@@ -1,0 +1,39 @@
+{
+  "name": "hypora",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Hypora — content-first WYSIWYG Markdown editor with dual-engine AI, built on Tauri 2 + Vue 3",
+  "author": "JingChen",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "build:tauri": "tauri build",
+    "dev:tauri": "tauri dev",
+    "generate:icon": "node scripts/generate-icon.cjs"
+  },
+  "dependencies": {
+    "@fontsource/ubuntu": "^5.1.1",
+    "@fontsource/ubuntu-mono": "^5.1.1",
+    "@tauri-apps/api": "^2.5.0",
+    "marked": "^15.0.7",
+    "mermaid": "^11.4.1",
+    "pinia": "^3.0.1",
+    "prismjs": "^1.29.0",
+    "turndown": "^7.2.0",
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.5.0",
+    "@types/node": "^22.10.5",
+    "@types/prismjs": "^1.26.5",
+    "@types/turndown": "^5.0.5",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "sass": "^1.83.1",
+    "typescript": "~5.7.3",
+    "vite": "^6.0.7",
+    "vue-tsc": "^2.2.0"
+  }
+}

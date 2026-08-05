@@ -1,0 +1,39 @@
+[package]
+name = "hypora"
+version = "0.1.0"
+description = "Hypora — content-first WYSIWYG Markdown editor with dual-engine AI"
+authors = ["JingChen"]
+edition = "2021"
+
+[lib]
+name = "hypora_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-shell = "2"
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+futures-util = "0.3"
+tokio = { version = "1", features = ["full"] }
+log = "0.4"
+simplelog = "0.12"
+base64 = "0.22"
+chrono = "0.4"
+
+[features]
+# custom-protocol 用于生产构建（frontendDist），开发时走 devUrl；勿删
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+codegen-units = 1
+panic = "abort"

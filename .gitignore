@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-ssr/
+*.local
+
+# Tauri
+src-tauri/target/
+src-tauri/gen/
+
+# Logs & editor
+logs/
+*.log
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Local env / keys — NEVER commit tokens
+.env
+.env.*
+!.env.example
+*.key
