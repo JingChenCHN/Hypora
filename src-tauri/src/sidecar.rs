@@ -119,7 +119,7 @@ pub async fn start(app: AppHandle, model: Option<String>) -> Result<SidecarStatu
     {
         let state = app.state::<AppState>();
         let mut guard = state.sidecar.lock().unwrap();
-        if let Some(prev) = guard.take() {
+        if let Some(mut prev) = guard.take() {
             let _ = prev.child.kill();
         }
         *guard = Some(SidecarProcess {
