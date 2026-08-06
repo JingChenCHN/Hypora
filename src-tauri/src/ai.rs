@@ -109,9 +109,10 @@ pub async fn run_ai_stream(
         .send()
         .await
         .map_err(|e| format!("AI 请求失败：{}", e))?;
-    if !resp.status().is_success() {
+    let status = resp.status();
+    if !status.is_success() {
         let text = resp.text().await.unwrap_or_default();
-        return Err(format!("AI 服务响应错误 HTTP {}：{}", resp.status(), truncate(&text, 300)));
+        return Err(format!("AI 服务响应错误 HTTP {}：{}", status, truncate(&text, 300)));
     }
 
     let mut stream = resp.bytes_stream();

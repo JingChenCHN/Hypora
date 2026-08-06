@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager, Window, WindowEvent};
 use tauri_plugin_dialog::DialogExt;
-use tauri_plugin_shell::ShellExt;
+use tauri_plugin_opener::OpenerExt;
 
 // ───────────── 应用状态（§5.3 长任务取消通道） ─────────────
 #[derive(Default)]
@@ -94,13 +94,13 @@ fn write_file_content(p: &Path, content: &str) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn open_file_dialog(app: AppHandle, filter: Option<Vec<FileFilter>>) -> Result<Option<OpenFileResult>, String> {
+fn open_file_dialog(app: AppHandle, filter: Option<Vec<FileFilter>>) -> Result<Option<OpenFileResult>, String> {
     let mut builder = app.dialog().file();
     for f in filter.unwrap_or_default() {
         let exts: Vec<&str> = f.extensions.iter().map(|s| s.as_str()).collect();
         builder = builder.add_filter(f.name, &exts);
     }
-    match builder.pick_file().await.map_err(|e| e.to_string())? {
+    match builder.blocking_pick_file() {
         Some(tauri_plugin_dialog::FilePath::Path(p)) => {
             let content = std::fs::read_to_string(&p).map_err(|e| format!("读取失败：{}", e))?;
             Ok(Some(OpenFileResult { path: p.display().to_string(), content }))
@@ -110,13 +110,13 @@ async fn open_file_dialog(app: AppHandle, filter: Option<Vec<FileFilter>>) -> Re
 }
 
 #[tauri::command]
-async fn save_dialog(app: AppHandle, default_name: String, content: String) -> Result<Option<String>, String> {
+fn save_dialog(app: AppHandle, default_name: String, content: String) -> Result<Option<String>, String> {
     let builder = app
         .dialog()
         .file()
         .add_filter("Markdown", &["md", "markdown", "txt"])
         .set_file_name(&default_name);
-    match builder.save_file().await.map_err(|e| e.to_string())? {
+    match builder.blocking_save_file() {
         Some(tauri_plugin_dialog::FilePath::Path(p)) => {
             write_file_content(&p, &content)?;
             Ok(Some(p.display().to_string()))
@@ -147,12 +147,13 @@ fn write_binary_file(path: String, base64_data: String) -> Result<(), String> {
 // ───────────── 外壳域（§5.1） ─────────────
 #[tauri::command]
 fn open_external(app: AppHandle, url: String) -> Result<(), String> {
-    app.shell().open(&url, None).map_err(|e| e.to_string())
+    app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn get_status(app: AppHandle) -> Result<AppStatus, String> {
-    let sidecar_guard = app.state::<AppState>().sidecar.lock().unwrap();
+    let state = app.state::<AppState>();
+    let sidecar_guard = state.sidecar.lock().unwrap();
     let local = sidecar_guard.as_ref();
     Ok(AppStatus {
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -215,8 +216,8 @@ fn export_diagnostics(app: AppHandle) -> Result<Option<String>, String> {
 fn show_log_file(app: AppHandle) -> Result<(), String> {
     let path = log_dir(&app).join(format!("hypora-{}.log", Local::now().format("%Y-%m-%d")));
     if path.exists() {
-        app.shell()
-            .open(path.to_string_lossy().to_string(), None)
+        app.opener()
+            .open_url(path.to_string_lossy().to_string(), None::<&str>)
             .map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -329,7 +330,7 @@ async fn sidecar_status(app: AppHandle) -> Result<sidecar::SidecarStatus, String
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             // 二次启动：聚焦主窗口 + 转发 .md 打开事件（§6.3）
             if let Some(window) = app.get_webview_window("main") {
@@ -380,9 +381,7 @@ pub fn run() {
             // 日志初始化（§7 日志 data_dir/logs 按日）
             let dir = log_dir(app.handle());
             let log_file = dir.join(format!("hypora-{}.log", Local::now().format("%Y-%m-%d")));
-            let config = simplelog::ConfigBuilder::new()
-                .set_time_format_str("%H:%M:%S")
-                .build();
+            let config = simplelog::ConfigBuilder::new().build();
             let _ = simplelog::WriteLogger::init(
                 log::LevelFilter::Info,
                 config,
@@ -401,8 +400,8 @@ pub fn run() {
                     let _ = win.destroy();
                 });
             }
-            // §5.2 win-maximized：状态同步 UI
-            WindowEvent::Resized(_) | WindowEvent::Maximized(_) => {
+            // §5.2 win-maximized：状态同步 UI（最大化状态经 Resized 事件驱动）
+            WindowEvent::Resized(_) => {
                 let m = window.is_maximized().unwrap_or(false);
                 let _ = window.emit("win-maximized", m);
             }

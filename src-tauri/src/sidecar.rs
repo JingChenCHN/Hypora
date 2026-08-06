@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use serde::Serialize;
 use tauri::AppHandle;
+use tauri::Manager;
 
 use crate::{app_data_dir, AppState};
 
@@ -85,7 +86,8 @@ pub async fn start(app: AppHandle, model: Option<String>) -> Result<SidecarStatu
 
     // 已运行则直接返回状态
     {
-        let guard = app.state::<AppState>().sidecar.lock().unwrap();
+        let state = app.state::<AppState>();
+        let guard = state.sidecar.lock().unwrap();
         if let Some(sp) = guard.as_ref() {
             if sp.running.load(Ordering::Relaxed) {
                 return Ok(sp.status());
@@ -115,7 +117,8 @@ pub async fn start(app: AppHandle, model: Option<String>) -> Result<SidecarStatu
         .map_err(|e| format!("启动 llama-server 失败：{}", e))?;
 
     {
-        let mut guard = app.state::<AppState>().sidecar.lock().unwrap();
+        let state = app.state::<AppState>();
+        let mut guard = state.sidecar.lock().unwrap();
         if let Some(prev) = guard.take() {
             let _ = prev.child.kill();
         }
@@ -147,7 +150,8 @@ pub async fn start(app: AppHandle, model: Option<String>) -> Result<SidecarStatu
 }
 
 pub fn stop(app: AppHandle) -> Result<(), String> {
-    let mut guard = app.state::<AppState>().sidecar.lock().unwrap();
+    let state = app.state::<AppState>();
+    let mut guard = state.sidecar.lock().unwrap();
     if let Some(mut sp) = guard.take() {
         sp.running.store(false, Ordering::Relaxed);
         let _ = sp.child.kill();
@@ -157,7 +161,8 @@ pub fn stop(app: AppHandle) -> Result<(), String> {
 }
 
 pub fn status(app: &AppHandle) -> Result<SidecarStatus, String> {
-    let guard = app.state::<AppState>().sidecar.lock().unwrap();
+    let state = app.state::<AppState>();
+    let guard = state.sidecar.lock().unwrap();
     Ok(match guard.as_ref() {
         Some(sp) if sp.running.load(Ordering::Relaxed) => sp.status(),
         _ => SidecarStatus::default(),
@@ -166,7 +171,8 @@ pub fn status(app: &AppHandle) -> Result<SidecarStatus, String> {
 
 /// 随主进程退出终止（§4 D4 无孤儿进程）
 pub fn kill_all(app: &AppHandle) {
-    let mut guard = app.state::<AppState>().sidecar.lock().unwrap();
+    let state = app.state::<AppState>();
+    let mut guard = state.sidecar.lock().unwrap();
     if let Some(mut sp) = guard.take() {
         let _ = sp.child.kill();
     }
