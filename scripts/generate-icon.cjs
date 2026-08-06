@@ -142,6 +142,33 @@ function drawIcon(size) {
   return rgba
 }
 
+/* ---------- ICO 编码（Windows 应用图标，Vista+ PNG 条目） ---------- */
+function encodeICO(entries) {
+  const count = entries.length
+  const header = Buffer.alloc(6)
+  header.writeUInt16LE(0, 0) // reserved
+  header.writeUInt16LE(1, 2) // type: icon
+  header.writeUInt16LE(count, 4)
+  const dirSize = 16
+  let offset = 6 + count * dirSize
+  const parts = [header]
+  for (const e of entries) {
+    const dir = Buffer.alloc(dirSize)
+    dir.writeUInt8(e.width >= 256 ? 0 : e.width, 0) // 0 表示 256
+    dir.writeUInt8(e.height >= 256 ? 0 : e.height, 1)
+    dir.writeUInt8(0, 2) // color count
+    dir.writeUInt8(0, 3) // reserved
+    dir.writeUInt16LE(1, 4) // planes
+    dir.writeUInt16LE(32, 6) // bit count
+    dir.writeUInt32LE(e.png.length, 8)
+    dir.writeUInt32LE(offset, 12)
+    parts.push(dir)
+    offset += e.png.length
+  }
+  for (const e of entries) parts.push(e.png)
+  return Buffer.concat(parts)
+}
+
 /* ---------- 输出 ---------- */
 const outDir = path.join(__dirname, '..', 'src-tauri', 'icons')
 fs.mkdirSync(outDir, { recursive: true })
@@ -158,4 +185,14 @@ for (const [name, size] of targets) {
   fs.writeFileSync(path.join(outDir, name), png)
   console.log(`✔ ${name} (${size}×${size}, ${(png.length / 1024).toFixed(1)} KB)`)
 }
+
+// Windows icon.ico：16/32/48/256 PNG 条目（Win10/11 原生支持）
+const icoEntries = [16, 32, 48, 256].map((size) => ({
+  width: size,
+  height: size,
+  png: encodePNG(size, size, drawIcon(size)),
+}))
+const ico = encodeICO(icoEntries)
+fs.writeFileSync(path.join(outDir, 'icon.ico'), ico)
+console.log(`✔ icon.ico (${icoEntries.length} 个尺寸, ${(ico.length / 1024).toFixed(1)} KB)`)
 console.log('图标已生成到 src-tauri/icons/')

@@ -1,0 +1,69 @@
+name: Build & Release
+
+# 触发：推 v* 标签（tag 驱动，推荐）或手动 workflow_dispatch（GitHub UI 上点 Run workflow）
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+# GITHUB_TOKEN 需 contents:write 以创建 Release 并上传产物
+permissions:
+  contents: write
+
+jobs:
+  build-win64:
+    name: Build Windows x64 (NSIS)
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust (stable, MSVC)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Frontend Dependencies
+        run: npm ci
+
+      - name: Build & Publish Release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__
+          releaseName: 'Hypora v__VERSION__'
+          releaseBody: |
+            ## Hypora v__VERSION__
+
+            内容优先、UI 隐退的所见即所得 Markdown 编辑器，内置双引擎 AI 写作助手（云端 OpenAI 兼容 + 本地 llama.cpp）。依据《Hypora 系统架构设计 v3.0》实现。
+
+            ### 🎉 本版本亮点
+            - **块级 WYSIWYG 编辑**：键入 → 块级重渲染（保光标）→ 防抖写回源文件
+            - **双引擎 AI**：DeepSeek / OpenAI / 智谱 GLM / 自定义（OpenAI 兼容）+ 本地 llama.cpp sidecar
+            - **思考链（reasoning_content）**：DeepSeek-R1 等模型流式展示思考过程
+            - **5 主题**：Yaru 设计语言（light / dark / system / 高对比 ×2），令牌单一事实源
+            - **frameless 自绘窗口**：交通灯 / 拖动 / 置顶（Win / macOS 一致）
+            - **数据零丢失**：before-close 落盘 + 编辑防抖双保险 + 单实例
+            - **导出**：Markdown / HTML / PDF / 图片（SVG）
+            - **能力白名单 + CSP**：渲染层零 Node，外部 IO 全经 Rust 内核
+
+            ### 📦 下载
+            - `Hypora_0.1.0_x64-setup.exe` — Windows x64 安装包（NSIS，复用系统 WebView2，安装包 ≤15MB）
+
+            > WebView2 运行时为 Windows 10/11 系统自带；Windows 7 不在支持范围内（WebView2 下限）。
+          releaseDraft: false
+          prerelease: false
+          # Windows 目标产 NSIS 安装包（稳定可靠；MSI 需 WiX，可按需放开为 --bundles nsis,msi）
+          args: --bundles nsis
