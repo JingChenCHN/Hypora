@@ -2,12 +2,74 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/app-icon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: asset: https://asset.localhost blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost https://ipc.localhost ws://127.0.0.1:* http://127.0.0.1:* https://api.openai.com https://api.deepseek.com https://open.bigmodel.cn;">
-    <title>Hypora</title>
+    <title>Hypora - 在线Markdown编辑器</title>
+    <style>
+      /* 初始加载样式 */
+      #app-loading {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-direction: column;
+        background: #fafaf9;
+        z-index: 9999;
+        transition: opacity 0.3s ease;
+      }
+      .loading-text {
+        margin-top: 16px;
+        font-size: 18px;
+        color: #8a8a85;
+      }
+      .loading-spinner {
+        width: 40px;
+        height: 40px;
+        border: 3px solid #e3e1dd;
+        border-top: 3px solid #1a1a1a;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+      }
+      @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+      }
+      [data-theme="dark"] #app-loading {
+        background: #0e0e0d;
+      }
+      [data-theme="dark"] .loading-text {
+        color: #8a8884;
+      }
+      [data-theme="dark"] .loading-spinner {
+        border: 3px solid #26261f;
+        border-top: 3px solid #d9d7d2;
+      }
+    </style>
   </head>
   <body>
-    <div id="app"></div>
+    <div id="app">
+      <div id="app-loading">
+        <div class="loading-spinner"></div>
+        <div class="loading-text">Hypora 加载中...</div>
+      </div>
+    </div>
     <script type="module" src="/src/main.ts"></script>
+    <script>
+      // 正常路径：main.ts 在 Vue mount 后立即移除遮罩（见 removeAppLoading）。
+      // 此处仅为兜底：load 后 2s 遮罩仍在（极端情况）才移除，避免白屏卡死感。
+      window.addEventListener('load', () => {
+        setTimeout(() => {
+          const loading = document.getElementById('app-loading');
+          if (loading) {
+            loading.style.opacity = '0';
+            setTimeout(() => loading.remove(), 300);
+          }
+        }, 2000);
+      });
+    </script>
   </body>
 </html>

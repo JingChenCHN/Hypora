@@ -1,99 +1,181 @@
-/**
- * 导出管线（§6.4）
- * flushSync + normalizeCodeBlocks → md / HTML / PDF / 图片（渲染层生成，内核 write_* 落盘）。
- */
-import { tauriAPI } from '@/utils/tauriAPI'
-import { markdownToHtml } from '@/utils/markdown'
-import { useDocumentStore } from '@/stores/document'
+import { saveAs } from 'file-saver'
+// html2canvas / jspdf 仅在导出 PDF/图片时使用,改为函数内动态 import(),避免拖慢首屏启动
 
-/** 简单 HTML 转义 */
-function esc(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
-}
-
-/** 内联样式片段，保证导出在无 WebView 样式时仍可读 */
-const EXPORT_CSS = `
-  body { font-family: 'Ubuntu','Noto Sans SC',system-ui,sans-serif; max-width: 820px; margin: 40px auto; padding: 0 24px; color: #1a1a1a; line-height: 1.7; }
-  h1,h2,h3{line-height:1.3} h1{border-bottom:2px solid #E95420;padding-bottom:8px}
-  pre{background:#f6f5f4;border-radius:6px;padding:14px;overflow:auto;font-family:'Ubuntu Mono',monospace;font-size:13px}
-  code{font-family:'Ubuntu Mono',monospace;background:#f0eee b;background:#f0eeeb;padding:2px 5px;border-radius:4px}
-  pre code{background:none;padding:0}
-  table{border-collapse:collapse} th,td{border:1px solid #d9d5d2;padding:8px 12px}
-  blockquote{border-left:4px solid #E95420;margin:0;padding:2px 16px;color:#555}
-  img{max-width:100%} a{color:#00698d}
-  hr{border:none;border-top:2px solid #d9d5d2;margin:28px 0}
-`
-
-function buildHtmlDocument(md: string): string {
-  const body = markdownToHtml(md)
-  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>Hypora 导出</title><style>${EXPORT_CSS}</style></head><body>${body}</body></html>`
-}
-
-function defaultExportName(): string {
-  const doc = useDocumentStore()
-  return (doc.fileName || '文档').replace(/\.md$/i, '')
-}
-
-/** 导出 Markdown */
-export async function exportMarkdown(md: string): Promise<string | null> {
-  const name = defaultExportName() + '.md'
-  const target = await tauriAPI.saveFileDialog(name, md)
-  if (target) await tauriAPI.writeFile(target, md)
-  return target
-}
-
-/** 导出 HTML */
-export async function exportHTML(md: string): Promise<string | null> {
-  const html = buildHtmlDocument(md)
-  const name = defaultExportName() + '.html'
-  const target = await tauriAPI.saveFileDialog(name, html)
-  if (target) await tauriAPI.writeFile(target, html)
-  return target
-}
-
-/** 导出 PDF：新窗口打印（浏览器原生打印 → 另存为 PDF） */
-export function exportPDF(md: string): void {
-  const html = buildHtmlDocument(md)
-  const w = window.open('', '_blank', 'width=900,height=1100')
-  if (!w) {
-    alert('浏览器拦截了新窗口，请允许弹出窗口后重试导出 PDF。')
-    return
+// 统一保存文件：Electron 用原生保存对话框（可选位置），Web 用浏览器下载
+// 返回 true 表示已保存，false 表示用户取消
+export async function saveFile(filename: string, content: string, mime: string = 'text/plain;charset=utf-8'): Promise<boolean> {
+  const electronAPI = (window as any).electronAPI
+  if (electronAPI?.showSaveDialog && electronAPI?.writeFile) {
+    // Electron：原生保存对话框
+    const result = await electronAPI.showSaveDialog(filename)
+    if (!result || result.canceled || !result.filePath) return false
+    const r = await electronAPI.writeFile(result.filePath, content)
+    return !!(r && r.success)
   }
-  w.document.write(html)
-  w.document.title = defaultExportName()
-  w.document.close()
-  w.focus()
-  setTimeout(() => w.print(), 600)
+  // Web：浏览器下载
+  const blob = new Blob([content], { type: mime })
+  saveAs(blob, filename)
+  return true
 }
 
-/** 导出图片（SVG）：渲染 HTML 到 SVG 文本，内核 write_file 落盘 */
-export async function exportSVG(md: string): Promise<string | null> {
-  const body = markdownToHtml(md)
-  const svg = `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1200" viewBox="0 0 1200 1600">
-<rect width="1200" height="1600" fill="#ffffff"/>
-<foreignObject width="1160" height="1560" x="20" y="20"><div xmlns="http://www.w3.org/1999/xhtml" style="font-family:Ubuntu,'Noto Sans SC',sans-serif;font-size:15px;line-height:1.7;color:#1a1a1a">${body}</div></foreignObject>
-</svg>`
-  const name = defaultExportName() + '.svg'
-  const target = await tauriAPI.saveFileDialog(name, svg)
-  if (target) await tauriAPI.writeFile(target, svg)
-  return target
+// 导出Markdown文件
+export async function exportMarkdown(content: string, filename: string = 'document'): Promise<boolean> {
+  return await saveFile(`${filename}.md`, content, 'text/markdown;charset=utf-8')
 }
 
-export type ExportKind = 'md' | 'html' | 'pdf' | 'svg'
+// 导出HTML文件（返回完整 HTML 字符串）
+export function buildHTML(content: string, title: string = 'Document', theme: string = 'light'): string {
+  return `<!DOCTYPE html>
+<html lang="zh-CN" data-theme="${theme}">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${title}</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --paper: #fafaf9; --paper-2: #efedea; --ink: #1a1a1a; --ink-2: #3f3f3c;
+      --muted: #8a8a85; --hair: #e3e1dd;
+      --serif: "Georgia", "Songti SC", "Source Han Serif SC", "Noto Serif SC", serif;
+    }
+    [data-theme="dark"]  { --paper: #0e0e0d; --paper-2: #161614; --ink: #d9d7d2; --ink-2: #b4b2ad; --muted: #8a8884; --hair: #26261f; }
+    [data-theme="beige"] { --paper: #f5f0e6; --paper-2: #ebe5d8; --ink: #3b3b3b; --ink-2: #6b6357; --muted: #8a8072; --hair: #d9d2c5; }
+    [data-theme="gray"]  { --paper: #f8f9fa; --paper-2: #e9ecef; --ink: #212529; --ink-2: #495057; --muted: #6c757d; --hair: #dee2e6; }
+    [data-theme="ice"]   { --paper: #e8f0f4; --paper-2: #dde7ed; --ink: #1a3a4a; --ink-2: #3d5f6e; --muted: #5a7a88; --hair: #c9dbe4; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+      line-height: 1.6;
+      padding: 40px;
+      max-width: 900px;
+      margin: 0 auto;
+      color: var(--ink);
+      background: var(--paper);
+    }
+    h1, h2, h3, h4, h5, h6 {
+      font-family: var(--serif);
+      font-weight: 500;
+      letter-spacing: -0.01em;
+      line-height: 1.25;
+      margin: 24px 0 16px;
+      color: var(--ink);
+    }
+    h1 { font-size: 2em; border-bottom: 1px solid var(--hair); padding-bottom: 0.3em; }
+    h2 { font-size: 1.5em; border-bottom: 1px solid var(--hair); padding-bottom: 0.3em; }
+    p { margin: 16px 0; }
+    pre { background: var(--paper-2); padding: 16px; border-radius: 2px; overflow-x: auto; margin: 16px 0; border: 1px solid var(--hair); }
+    code { font-family: "JetBrains Mono", "SF Mono", Consolas, Monaco, monospace; font-size: 0.9em; }
+    .inline-code { background: var(--paper-2); padding: 2px 6px; border-radius: 2px; }
+    table { border-collapse: collapse; width: 100%; margin: 16px 0; }
+    th, td { border: 1px solid var(--hair); padding: 8px 12px; text-align: left; }
+    th { background: var(--paper-2); font-weight: 500; }
+    blockquote { border-left: 2px solid var(--muted); padding: 0 1em; color: var(--ink-2); margin: 16px 0; }
+    ul, ol { padding-left: 2em; margin: 16px 0; }
+    li { margin: 4px 0; }
+    img { max-width: 100%; margin: 16px 0; }
+    hr { border: none; border-top: 1px solid var(--hair); margin: 24px 0; }
+    a { color: var(--ink); text-decoration: none; border-bottom: 1px solid transparent; }
+    a:hover { border-bottom-color: var(--muted); }
+    .task-list-item { list-style: none; margin-left: -1.5em; }
+    .task-checkbox { margin-right: 0.5em; }
+    .code-block-wrapper { margin: 16px 0; border-radius: 2px; overflow: hidden; border: 1px solid var(--hair); }
+    .code-block-header { background: var(--paper-2); padding: 8px 16px; display: flex; justify-content: space-between; align-items: center; font-size: 0.85em; color: var(--muted); border-bottom: 1px solid var(--hair); }
+    .code-copy-btn { background: none; border: none; cursor: pointer; color: var(--ink); }
+    .table-wrapper { overflow-x: auto; margin: 16px 0; }
+    .math-block { margin: 16px 0; text-align: center; overflow-x: auto; }
+    .mermaid { margin: 16px 0; text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="markdown-body">
+    ${content}
+  </div>
+</body>
+</html>`
+}
 
-export async function runExport(kind: ExportKind, md: string): Promise<string | null> {
-  const doc = useDocumentStore()
-  await doc.flushSave() // §6.4 flushSync：导出前落盘并取最新内容
-  switch (kind) {
-    case 'md':
-      return exportMarkdown(md)
-    case 'html':
-      return exportHTML(md)
-    case 'pdf':
-      exportPDF(md)
-      return null
-    case 'svg':
-      return exportSVG(md)
+// 导出HTML文件
+export async function exportHTML(content: string, title: string = 'Document', theme: string = 'light'): Promise<boolean> {
+  return await saveFile(`${title}.html`, buildHTML(content, title, theme), 'text/html;charset=utf-8')
+}
+
+// 导出PDF（Electron 用原生保存对话框，Web 用浏览器下载）
+export async function exportPDF(element: HTMLElement, filename: string = 'document'): Promise<boolean> {
+  const [{ default: html2canvas }, { default: jsPDF }] = await Promise.all([import('html2canvas'), import('jspdf')])
+  const canvas = await html2canvas(element, {
+    scale: 2,
+    useCORS: true,
+    logging: false,
+    backgroundColor: getComputedStyle(document.body).backgroundColor
+  })
+
+  const imgData = canvas.toDataURL('image/png')
+  const pdf = new jsPDF('p', 'mm', 'a4')
+  const imgWidth = 210
+  const pageHeight = 297
+  const imgHeight = (canvas.height * imgWidth) / canvas.width
+  let heightLeft = imgHeight
+  let position = 0
+
+  pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight)
+  heightLeft -= pageHeight
+
+  while (heightLeft >= 0) {
+    position = heightLeft - imgHeight
+    pdf.addPage()
+    pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight)
+    heightLeft -= pageHeight
   }
+
+  const electronAPI = (window as any).electronAPI
+  if (electronAPI?.showSaveDialog && electronAPI?.writeBinaryFile) {
+    const result = await electronAPI.showSaveDialog(`${filename}.pdf`)
+    if (!result || result.canceled || !result.filePath) return false
+    // jsPDF output arraybuffer → base64
+    const ab = pdf.output('arraybuffer')
+    const base64 = btoa(String.fromCharCode(...new Uint8Array(ab)))
+    const r = await electronAPI.writeBinaryFile(result.filePath, base64)
+    return !!(r && r.success)
+  }
+  pdf.save(`${filename}.pdf`)
+  return true
+}
+
+// 导出图片（Electron 用原生保存对话框，Web 用浏览器下载）
+export async function exportImage(element: HTMLElement, filename: string = 'document'): Promise<boolean> {
+  const { default: html2canvas } = await import('html2canvas')
+  const canvas = await html2canvas(element, {
+    scale: 2,
+    useCORS: true,
+    logging: false,
+    backgroundColor: getComputedStyle(document.body).backgroundColor
+  })
+
+  const electronAPI = (window as any).electronAPI
+  if (electronAPI?.showSaveDialog && electronAPI?.writeBinaryFile) {
+    const result = await electronAPI.showSaveDialog(`${filename}.png`)
+    if (!result || result.canceled || !result.filePath) return false
+    const base64 = canvas.toDataURL('image/png').split(',')[1]
+    const r = await electronAPI.writeBinaryFile(result.filePath, base64)
+    return !!(r && r.success)
+  }
+  return new Promise<boolean>((resolve) => {
+    canvas.toBlob((blob: Blob | null) => {
+      if (blob) { saveAs(blob, `${filename}.png`); resolve(true) }
+      else resolve(false)
+    })
+  })
+}
+
+// 读取本地.md文件
+export function readMdFile(file: File): Promise<{ title: string, content: string }> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      const content = e.target?.result as string
+      const title = file.name.replace(/\.md$/, '')
+      resolve({ title, content })
+    }
+    reader.onerror = reject
+    reader.readAsText(file, 'utf-8')
+  })
 }

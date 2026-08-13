@@ -1,213 +1,501 @@
-@use 'sass:map';
-@use 'mixins' as *;
+/* ============================================================
+   Hypora · 冷淡单色（对齐 hypora-site 落地页设计语言）
+   无独立 accent：交互色即墨色（--accent-color = --text-primary）
+   发丝线 1px、方角 0–2px、衬线标题、JetBrains Mono 代码
+   ============================================================ */
 
-// ════════════════════════════════════════════════════════════════
-// Hypora 主题令牌 · 单一事实源（设计文档 §4 D6 / §14.2）
-// ── 唯一令牌源：src/themes/index.scss
-// ── 派生：light / dark / system / high-contrast-light / high-contrast-dark
-// ── 约定：组件禁止硬编码颜色，一律取 var(--hypora-*)。
-// ── Yaru 设计语言：accent #E95420 / aubergine #2C001E
-// ════════════════════════════════════════════════════════════════
-
-// ————— 五个主题的令牌值（单一 map，零成本跟随）—————
-$themes: (
-  light: (
-    'accent': #E95420,
-    'accent-hover': #D6441B,
-    'accent-active': #B8401A,
-    'accent-contrast': #FFFFFF,
-    'accent-soft': rgba(233, 84, 32, 0.12),
-    'bg': #F6F5F4,
-    'bg-elevated': #FFFFFF,
-    'bg-inset': #E9E7E5,
-    'bg-hover': rgba(0, 0, 0, 0.06),
-    'fg': #1A1A1A,
-    'fg-muted': #555555,
-    'fg-subtle': #8B8884,
-    'fg-on-accent': #FFFFFF,
-    'border': #D9D5D2,
-    'border-strong': #B8B3AF,
-    'selection': rgba(233, 84, 32, 0.22),
-    'code-bg': #F0EEEB,
-    'code-fg': #2C2C2C,
-    'link': #00698D,
-    'success': #0E8420,
-    'warning': #B26A00,
-    'danger': #C7162B,
-    'info': #00698D,
-    'aubergine': #772953,
-    'titlebar-bg': #FFFFFF,
-    'shadow': 0 1px 3px rgba(0, 0, 0, 0.12),
-    'focus-ring': rgba(233, 84, 32, 0.45),
-    'block-hover': rgba(233, 84, 32, 0.06),
-    'mermaid-border': #D9D5D2,
-    'scroll-thumb': rgba(0, 0, 0, 0.25),
-    'scroll-track': rgba(0, 0, 0, 0.04),
-    'table-head': #ECEAE8,
-    'ai-bubble': rgba(233, 84, 32, 0.08),
-  ),
-  dark: (
-    'accent': #E95420,
-    'accent-hover': #FF6D3B,
-    'accent-active': #F26D3A,
-    'accent-contrast': #FFFFFF,
-    'accent-soft': rgba(233, 84, 32, 0.24),
-    'bg': #2C001E,
-    'bg-elevated': #3A2436,
-    'bg-inset': #1D0014,
-    'bg-hover': rgba(255, 255, 255, 0.06),
-    'fg': #F6F5F4,
-    'fg-muted': #C4B9C0,
-    'fg-subtle': #8E7E88,
-    'fg-on-accent': #FFFFFF,
-    'border': #4D3C49,
-    'border-strong': #6A5564,
-    'selection': rgba(233, 84, 32, 0.38),
-    'code-bg': #3A2436,
-    'code-fg': #E6DDE3,
-    'link': #8FD3FF,
-    'success': #30B544,
-    'warning': #F9C445,
-    'danger': #FF7A85,
-    'info': #8FD3FF,
-    'aubergine': #A34F8C,
-    'titlebar-bg': #2C001E,
-    'shadow': 0 1px 4px rgba(0, 0, 0, 0.45),
-    'focus-ring': rgba(233, 84, 32, 0.55),
-    'block-hover': rgba(233, 84, 32, 0.12),
-    'mermaid-border': #6A5564,
-    'scroll-thumb': rgba(255, 255, 255, 0.25),
-    'scroll-track': rgba(255, 255, 255, 0.05),
-    'table-head': #43303F,
-    'ai-bubble': rgba(233, 84, 32, 0.16),
-  ),
-  'high-contrast-light': (
-    'accent': #B03611,
-    'accent-hover': #8E2A0C,
-    'accent-active': #6E2009,
-    'accent-contrast': #FFFFFF,
-    'accent-soft': rgba(176, 54, 17, 0.18),
-    'bg': #FFFFFF,
-    'bg-elevated': #F2F2F2,
-    'bg-inset': #E0E0E0,
-    'bg-hover': rgba(0, 0, 0, 0.10),
-    'fg': #000000,
-    'fg-muted': #262626,
-    'fg-subtle': #595959,
-    'fg-on-accent': #FFFFFF,
-    'border': #767676,
-    'border-strong': #000000,
-    'selection': rgba(0, 120, 215, 0.35),
-    'code-bg': #EFEFEF,
-    'code-fg': #000000,
-    'link': #003057,
-    'success': #005A1A,
-    'warning': #6B4A00,
-    'danger': #A80016,
-    'info': #003057,
-    'aubergine': #5C1F43,
-    'titlebar-bg': #FFFFFF,
-    'shadow': 0 1px 3px rgba(0, 0, 0, 0.2),
-    'focus-ring': #0078D7,
-    'block-hover': rgba(176, 54, 17, 0.10),
-    'mermaid-border': #767676,
-    'scroll-thumb': rgba(0, 0, 0, 0.45),
-    'scroll-track': rgba(0, 0, 0, 0.06),
-    'table-head': #E6E6E6,
-    'ai-bubble': rgba(176, 54, 17, 0.12),
-  ),
-  'high-contrast-dark': (
-    'accent': #FF8C66,
-    'accent-hover': #FFAA8A,
-    'accent-active': #FF6D3B,
-    'accent-contrast': #1A0000,
-    'accent-soft': rgba(255, 140, 102, 0.20),
-    'bg': #000000,
-    'bg-elevated': #101010,
-    'bg-inset': #050505,
-    'bg-hover': rgba(255, 255, 255, 0.10),
-    'fg': #FFFFFF,
-    'fg-muted': #D6D6D6,
-    'fg-subtle': #A0A0A0,
-    'fg-on-accent': #1A0000,
-    'border': #C0C0C0,
-    'border-strong': #FFFFFF,
-    'selection': rgba(255, 140, 102, 0.45),
-    'code-bg': #101010,
-    'code-fg': #FFFFFF,
-    'link': #A6E3FF,
-    'success': #4ADE80,
-    'warning': #FFE066,
-    'danger': #FF8A95,
-    'info': #A6E3FF,
-    'aubergine': #D0A0C8,
-    'titlebar-bg': #000000,
-    'shadow': 0 1px 4px rgba(0, 0, 0, 0.8),
-    'focus-ring': #FF8C66,
-    'block-hover': rgba(255, 140, 102, 0.12),
-    'mermaid-border': #C0C0C0,
-    'scroll-thumb': rgba(255, 255, 255, 0.5),
-    'scroll-track': rgba(255, 255, 255, 0.08),
-    'table-head': #1A1A1A,
-    'ai-bubble': rgba(255, 140, 102, 0.16),
-  ),
-);
-
-@mixin apply-theme($vars) {
-  @each $name, $value in $vars {
-    --hypora-#{$name}: #{$value};
-  }
-}
-
-// ————— 全局设计令牌（不随主题变化）—————
+/* —— 字体栈（与站点一致）+ Element Plus 方角 —— */
 :root {
-  --hypora-radius-sm: 4px;
-  --hypora-radius: 6px;
-  --hypora-radius-lg: 10px;
-  --hypora-radius-full: 999px;
-  --hypora-font-sans: 'Ubuntu', system-ui, -apple-system, 'Segoe UI', 'Noto Sans SC', sans-serif;
-  --hypora-font-mono: 'Ubuntu Mono', ui-monospace, 'Cascadia Code', Consolas, 'SFMono-Regular', monospace;
-  --hypora-space-1: 4px;
-  --hypora-space-2: 8px;
-  --hypora-space-3: 12px;
-  --hypora-space-4: 16px;
-  --hypora-space-5: 24px;
-  --hypora-space-6: 32px;
-  --hypora-transition-fast: 100ms ease;
-  --hypora-transition: 160ms ease;
-  --hypora-titlebar-h: 40px;
-  --hypora-toolbar-h: 40px;
-  --hypora-statusbar-h: 28px;
-  --hypora-z-toolbar: 100;
-  --hypora-z-titlebar: 110;
-  --hypora-z-popover: 300;
-  --hypora-z-modal: 500;
-  --hypora-z-toast: 600;
+  --font-serif: "Georgia", "Songti SC", "Source Han Serif SC", "Noto Serif SC", serif;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", Arial, sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", Consolas, Monaco, monospace;
+
+  --el-border-radius-base: 2px;
+  --el-border-radius-small: 1px;
 }
 
-// ————— 主题应用（预应用防闪屏：main.ts 同步设置 data-theme）—————
-// 无 data-theme 时回退 light，避免 JS 就绪前的白屏/黑闪
-:root,
-:root:not([data-theme]) {
-  @include apply-theme(map.get($themes, 'light'));
+/* —— 浅色白（默认）—— */
+:root, [data-theme="light"] {
+  --bg-primary: #fafaf9;
+  --bg-secondary: #efedea;
+  --bg-tertiary: #f1efec;
+  --text-primary: #1a1a1a;
+  --text-secondary: #3f3f3c;
+  --text-muted: #8a8a85;
+  --border-color: #e3e1dd;
+  --accent-color: #1a1a1a;
+  --accent-hover: #3f3f3c;
+  --code-bg: #efedea;
+  --code-text: #1a1a1a;
+  --blockquote-border: #8a8a85;
+  --blockquote-bg: #efedea;
+  --table-border: #e3e1dd;
+  --table-header-bg: #efedea;
+  --toolbar-bg: color-mix(in srgb, #fafaf9 88%, transparent);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --selection-bg: rgba(26, 26, 26, 0.9);
+  --highlight-bg: rgba(26, 26, 26, 0.12);
+
+  --el-color-primary: #1a1a1a;
+  --el-color-primary-light-3: #5f5f5f;
+  --el-color-primary-light-5: #8d8d8d;
+  --el-color-primary-light-7: #bababa;
+  --el-color-primary-light-8: #d1d1d1;
+  --el-color-primary-light-9: #e8e8e8;
+  --el-color-primary-dark-2: #151515;
 }
-:root[data-theme='light'] {
-  @include apply-theme(map.get($themes, 'light'));
+
+/* —— 暗色黑（中性墨，非茄紫）—— */
+[data-theme="dark"] {
+  --bg-primary: #0e0e0d;
+  --bg-secondary: #161614;
+  --bg-tertiary: #131311;
+  --text-primary: #d9d7d2;
+  --text-secondary: #b4b2ad;
+  --text-muted: #8a8884;
+  --border-color: #26261f;
+  --accent-color: #d9d7d2;
+  --accent-hover: #f3f1ec;
+  --code-bg: #161614;
+  --code-text: #d9d7d2;
+  --blockquote-border: #3a3a35;
+  --blockquote-bg: #161614;
+  --table-border: #26261f;
+  --table-header-bg: #161614;
+  --toolbar-bg: color-mix(in srgb, #0e0e0d 88%, transparent);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --selection-bg: rgba(217, 215, 210, 0.9);
+  --highlight-bg: rgba(217, 215, 210, 0.16);
+
+  --el-color-primary: #d9d7d2;
+  --el-color-primary-light-3: #e4e3df;
+  --el-color-primary-light-5: #ecebe8;
+  --el-color-primary-light-7: #f3f3f1;
+  --el-color-primary-light-8: #f7f7f5;
+  --el-color-primary-light-9: #fbfbfa;
+  --el-color-primary-dark-2: #aeaca8;
 }
-:root[data-theme='dark'] {
-  @include apply-theme(map.get($themes, 'dark'));
+
+/* —— 米色护眼 —— */
+[data-theme="beige"] {
+  --bg-primary: #f5f0e6;
+  --bg-secondary: #ebe5d8;
+  --bg-tertiary: #f8f4eb;
+  --text-primary: #3b3b3b;
+  --text-secondary: #6b6357;
+  --text-muted: #8a8072;
+  --border-color: #d9d2c5;
+  --accent-color: #3b3b3b;
+  --accent-hover: #6b6357;
+  --code-bg: #eee9de;
+  --code-text: #433e36;
+  --blockquote-border: #8a8072;
+  --blockquote-bg: #eee9de;
+  --table-border: #d9d2c5;
+  --table-header-bg: #eee9de;
+  --toolbar-bg: color-mix(in srgb, #f5f0e6 88%, transparent);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --selection-bg: rgba(59, 59, 59, 0.9);
+  --highlight-bg: rgba(59, 59, 59, 0.12);
+
+  --el-color-primary: #3b3b3b;
+  --el-color-primary-light-3: #767676;
+  --el-color-primary-light-5: #9d9d9d;
+  --el-color-primary-light-7: #c4c4c4;
+  --el-color-primary-light-8: #d8d8d8;
+  --el-color-primary-light-9: #ebebeb;
+  --el-color-primary-dark-2: #2f2f2f;
 }
-:root[data-theme='high-contrast-light'] {
-  @include apply-theme(map.get($themes, 'high-contrast-light'));
+
+/* —— 极简灰 —— */
+[data-theme="gray"] {
+  --bg-primary: #f8f9fa;
+  --bg-secondary: #e9ecef;
+  --bg-tertiary: #fdfdfd;
+  --text-primary: #212529;
+  --text-secondary: #495057;
+  --text-muted: #6c757d;
+  --border-color: #dee2e6;
+  --accent-color: #212529;
+  --accent-hover: #495057;
+  --code-bg: #e9ecef;
+  --code-text: #212529;
+  --blockquote-border: #6c757d;
+  --blockquote-bg: #e9ecef;
+  --table-border: #dee2e6;
+  --table-header-bg: #e9ecef;
+  --toolbar-bg: color-mix(in srgb, #f8f9fa 88%, transparent);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --selection-bg: rgba(33, 37, 41, 0.9);
+  --highlight-bg: rgba(33, 37, 41, 0.12);
+
+  --el-color-primary: #212529;
+  --el-color-primary-light-3: #646669;
+  --el-color-primary-light-5: #909294;
+  --el-color-primary-light-7: #bcbebf;
+  --el-color-primary-light-8: #d3d3d4;
+  --el-color-primary-light-9: #e9e9ea;
+  --el-color-primary-dark-2: #1a1e21;
 }
-:root[data-theme='high-contrast-dark'] {
-  @include apply-theme(map.get($themes, 'high-contrast-dark'));
+
+/* —— 冰雪 —— */
+[data-theme="ice"] {
+  --bg-primary: #e8f0f4;
+  --bg-secondary: #dde7ed;
+  --bg-tertiary: #f0f6f9;
+  --text-primary: #1a3a4a;
+  --text-secondary: #3d5f6e;
+  --text-muted: #5a7a88;
+  --border-color: #c9dbe4;
+  --accent-color: #1a3a4a;
+  --accent-hover: #3d5f6e;
+  --code-bg: #dde7ed;
+  --code-text: #1a3a4a;
+  --blockquote-border: #5a7a88;
+  --blockquote-bg: #dde7ed;
+  --table-border: #c9dbe4;
+  --table-header-bg: #dde7ed;
+  --toolbar-bg: color-mix(in srgb, #e8f0f4 88%, transparent);
+  --shadow: 0 1px 2px rgba(26, 58, 74, 0.06);
+  --selection-bg: rgba(26, 58, 74, 0.9);
+  --highlight-bg: rgba(26, 58, 74, 0.12);
+
+  --el-color-primary: #1a3a4a;
+  --el-color-primary-light-3: #5f7580;
+  --el-color-primary-light-5: #8d9da5;
+  --el-color-primary-light-7: #bac4c9;
+  --el-color-primary-light-8: #d1d8db;
+  --el-color-primary-light-9: #e8ebed;
+  --el-color-primary-dark-2: #152e3b;
 }
-:root[data-theme='system'] {
-  @include apply-theme(map.get($themes, 'light'));
+
+/* 应用主题变量 */
+body {
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-feature-settings: "kern", "liga", "calt";
 }
-@media (prefers-color-scheme: dark) {
-  :root[data-theme='system'] {
-    @include apply-theme(map.get($themes, 'dark'));
-  }
+
+/* Markdown内容样式 */
+.markdown-body {
+  font-size: var(--editor-font-size, 16px);
+  line-height: var(--editor-line-height, 1.6);
+  padding: var(--editor-margin, 40px) 60px;
+  max-width: var(--editor-max-width, 900px);
+  margin: 0 auto;
+  min-height: 100%;
+  outline: none;
+  word-wrap: break-word;
 }
+
+.markdown-body:focus {
+  outline: none;
+}
+
+/* 标题样式：衬线点睛（站点 display 同款），发丝线下边框 */
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 {
+  font-family: var(--font-serif);
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+  margin: 24px 0 16px;
+  color: var(--text-primary);
+  min-height: 1.3em;
+}
+
+/* 空标题占位提示（输入 # 空格后，避免空下划线被误认为分割线） */
+.markdown-body h1:empty::before { content: '一级标题'; }
+.markdown-body h2:empty::before { content: '二级标题'; }
+.markdown-body h3:empty::before { content: '三级标题'; }
+.markdown-body h4:empty::before { content: '四级标题'; }
+.markdown-body h5:empty::before { content: '五级标题'; }
+.markdown-body h6:empty::before { content: '六级标题'; }
+.markdown-body h1:empty::before,
+.markdown-body h2:empty::before,
+.markdown-body h3:empty::before,
+.markdown-body h4:empty::before,
+.markdown-body h5:empty::before,
+.markdown-body h6:empty::before {
+  color: var(--text-muted);
+  font-weight: 400;
+  opacity: 0.5;
+}
+
+.markdown-body h1 {
+  font-size: 2em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--border-color);
+}
+.markdown-body h2 {
+  font-size: 1.5em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--border-color);
+}
+.markdown-body h3 { font-size: 1.25em; }
+.markdown-body h4 { font-size: 1em; }
+.markdown-body h5 { font-size: 0.875em; }
+.markdown-body h6 { font-size: 0.85em; color: var(--text-muted); }
+
+/* 段落 */
+.markdown-body p { margin: 16px 0; }
+
+/* 行内代码 */
+.markdown-body .inline-code,
+.markdown-body code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  padding: 2px 6px;
+  border-radius: 2px;
+  background: var(--code-bg);
+  color: var(--code-text);
+}
+
+/* 代码块 */
+.markdown-body .code-block-wrapper {
+  margin: 16px 0;
+  border-radius: 2px;
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+}
+.markdown-body .code-block-header {
+  background: var(--bg-secondary);
+  padding: 8px 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.85em;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border-color);
+}
+.markdown-body .code-copy-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--accent-color);
+  font-size: 0.9em;
+  padding: 2px 8px;
+  border-radius: 2px;
+  transition: background 0.2s;
+}
+.markdown-body .code-copy-btn:hover {
+  background: var(--bg-tertiary);
+}
+.markdown-body pre {
+  margin: 0;
+  padding: 16px;
+  overflow-x: auto;
+  background: var(--code-bg);
+  line-height: 1.45;
+}
+.markdown-body pre code {
+  padding: 0;
+  background: none;
+  font-size: 0.9em;
+}
+
+/* 代码块编辑态：高亮边框提示可编辑，显示文本光标 */
+.markdown-body .code-block-wrapper.editing {
+  box-shadow: inset 0 0 0 2px var(--accent-color);
+}
+.markdown-body .code-block-wrapper.editing pre,
+.markdown-body .code-block-wrapper.editing code {
+  caret-color: var(--text-primary);
+  outline: none;
+}
+
+/* 列表 */
+.markdown-body ul,
+.markdown-body ol {
+  padding-left: 2em;
+  margin: 16px 0;
+}
+.markdown-body li { margin: 4px 0; }
+.markdown-body ul { list-style-type: disc; }
+.markdown-body ol { list-style-type: decimal; }
+
+/* 任务列表 */
+.markdown-body .task-list-item {
+  list-style: none;
+  margin-left: -1.5em;
+}
+.markdown-body .task-checkbox {
+  margin-right: 0.5em;
+  accent-color: var(--accent-color);
+}
+
+/* 引用块：发丝线引号（站点 quote 同款），无橙 */
+.markdown-body blockquote {
+  border-left: 2px solid var(--blockquote-border);
+  padding: 0 1em;
+  color: var(--text-secondary);
+  margin: 16px 0;
+  background: var(--blockquote-bg);
+  border-radius: 0;
+}
+.markdown-body blockquote p { padding: 8px 0; }
+
+/* 表格：纯发丝线 Swiss 网格 */
+.markdown-body .table-wrapper {
+  overflow-x: auto;
+  margin: 16px 0;
+  border-radius: 2px;
+  border: 1px solid var(--table-border);
+}
+.markdown-body table {
+  border-collapse: collapse;
+  width: 100%;
+}
+.markdown-body th,
+.markdown-body td {
+  border: 1px solid var(--table-border);
+  padding: 8px 12px;
+  text-align: left;
+}
+.markdown-body th {
+  background: var(--table-header-bg);
+  font-weight: 500;
+}
+
+/* 分割线 */
+.markdown-body hr {
+  border: none;
+  border-top: 1px solid var(--border-color);
+  margin: 24px 0;
+}
+
+/* 链接：墨色 + hover 下划线（站点 .dl-link 风格），弃橙 */
+.markdown-body a {
+  color: var(--text-primary);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color 0.2s, color 0.2s;
+}
+.markdown-body a:hover {
+  border-bottom-color: var(--text-muted);
+}
+
+/* 图片 */
+.markdown-body img {
+  max-width: 100%;
+  border-radius: 2px;
+  margin: 16px 0;
+  box-shadow: var(--shadow);
+}
+
+/* 粗体 */
+.markdown-body strong { font-weight: 700; }
+
+/* 删除线 */
+.markdown-body del {
+  text-decoration: line-through;
+  color: var(--text-muted);
+}
+
+/* 高亮：墨色透明底，不用橙 */
+.markdown-body mark {
+  background: var(--highlight-bg);
+  color: var(--text-primary);
+  padding: 2px 4px;
+  border-radius: 1px;
+}
+
+/* 数学公式 */
+.markdown-body .math-block {
+  margin: 16px 0;
+  text-align: center;
+  overflow-x: auto;
+  padding: 16px;
+}
+.markdown-body .math-inline { display: inline-block; }
+.markdown-body .katex { font-size: 1.05em; }
+
+/* 脚注 */
+.markdown-body .footnotes {
+  margin-top: 32px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-color);
+  font-size: 0.88em;
+  color: var(--text-secondary);
+}
+.markdown-body .footnotes ol { padding-left: 1.5em; }
+.markdown-body sup { font-size: 0.75em; vertical-align: super; }
+.markdown-body sup a { color: var(--text-primary); text-decoration: none; }
+
+/* 文档内目录 TOC */
+.markdown-body .toc {
+  margin: 16px 0;
+  padding: 12px 20px;
+  background: var(--bg-secondary);
+  border-left: 2px solid var(--text-muted);
+  border-radius: 0;
+}
+.markdown-body .toc ul { padding-left: 1em; list-style: none; }
+.markdown-body .toc li { margin: 4px 0; }
+.markdown-body .toc li a { color: var(--text-primary); text-decoration: none; }
+.markdown-body .toc li a:hover { text-decoration: underline; }
+.markdown-body .toc .toc-level-2 { padding-left: 1.5em; }
+.markdown-body .toc .toc-level-3 { padding-left: 3em; }
+.markdown-body .toc .toc-level-4 { padding-left: 4.5em; }
+.markdown-body .toc .toc-level-5 { padding-left: 6em; }
+.markdown-body .toc .toc-level-6 { padding-left: 7.5em; }
+.markdown-body .toc-empty { color: var(--text-muted); font-style: italic; padding: 12px; }
+
+/* 焦点模式：非当前段落变淡 */
+.markdown-body.focus-mode > * { opacity: 0.3; transition: opacity 0.2s; }
+.markdown-body.focus-mode > .focused,
+.markdown-body.focus-mode .focused { opacity: 1; }
+
+/* Mermaid图表 */
+.markdown-body .mermaid {
+  margin: 16px 0;
+  text-align: center;
+  background: var(--bg-tertiary);
+  padding: 20px;
+  border-radius: 2px;
+}
+.markdown-body .mermaid svg { max-width: 100%; }
+.mermaid-error {
+  color: #f56c6c;
+  padding: 16px;
+  background: rgba(245, 108, 108, 0.1);
+  border-radius: 2px;
+  text-align: left;
+}
+
+/* Prism代码高亮暗色适配 */
+[data-theme="dark"] .token.comment,
+[data-theme="dark"] .token.prolog,
+[data-theme="dark"] .token.doctype,
+[data-theme="dark"] .token.cdata { color: #6a9955; }
+[data-theme="dark"] .token.punctuation { color: #d4d4d4; }
+[data-theme="dark"] .token.property,
+[data-theme="dark"] .token.tag,
+[data-theme="dark"] .token.boolean,
+[data-theme="dark"] .token.number,
+[data-theme="dark"] .token.constant,
+[data-theme="dark"] .token.symbol,
+[data-theme="dark"] .token.deleted { color: #b5cea8; }
+[data-theme="dark"] .token.selector,
+[data-theme="dark"] .token.attr-name,
+[data-theme="dark"] .token.string,
+[data-theme="dark"] .token.char,
+[data-theme="dark"] .token.builtin,
+[data-theme="dark"] .token.inserted { color: #ce9178; }
+[data-theme="dark"] .token.operator,
+[data-theme="dark"] .token.entity,
+[data-theme="dark"] .token.url,
+[data-theme="dark"] .language-css .token.string,
+[data-theme="dark"] .style .token.string { color: #d4d4d4; }
+[data-theme="dark"] .token.atrule,
+[data-theme="dark"] .token.attr-value,
+[data-theme="dark"] .token.keyword { color: #569cd6; }
+[data-theme="dark"] .token.function,
+[data-theme="dark"] .token.class-name { color: #dcdcaa; }
+[data-theme="dark"] .token.regex,
+[data-theme="dark"] .token.important,
+[data-theme="dark"] .token.variable { color: #d16969; }

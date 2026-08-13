@@ -1,6 +1,6 @@
-// Hypora — Tauri 内核入口（§4 D1 唯一运行时：Rust 内核 + 系统 WebView）
+// Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    hypora_lib::run()
+  app_lib::run();
 }

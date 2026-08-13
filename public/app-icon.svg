@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Hypora 冷调标识：墨黑方 + 衬线 H（与官网 logo 同源） -->
+  <rect width="1024" height="1024" fill="#171717"/>
+  <!-- 发丝描边，浅色桌面/任务栏下勾勒轮廓 -->
+  <rect x="6" y="6" width="1012" height="1012" fill="none" stroke="#f7f6f4" stroke-opacity="0.08" stroke-width="4"/>
+  <!-- 衬线 H，纸白，几何居中 -->
+  <text x="512" y="726" text-anchor="middle"
+        font-family="Georgia, 'Times New Roman', 'Songti SC', serif"
+        font-size="620" font-weight="400"
+        fill="#f7f6f4">H</text>
+</svg>

@@ -1,41 +1,90 @@
 /**
- * AI 加载动效（§14.1 assets/aiLoading.ts）
- * lottie 挂载即播、对话即卸（§9 性能）；主题色从令牌读取，保证设计一致。
+ * Lottie 动画：三点波浪 loader（AI 思考中）。
+ * 手写 Lottie 格式对象，符合 lottie-web schema，离线可用、无需外部 JSON 资源。
+ * 三点按相位依次亮灭，循环周期 1s（30fps × 30 帧）。
  */
-import type { ThemeName } from '@/utils/tauriAPI'
-
-export interface LoadingFrame {
-  delay: number
-  text: string
-}
-
-/** 思考中轮播文案 */
-export const THINKING_FRAMES: LoadingFrame[] = [
-  { delay: 2600, text: '正在思考…' },
-  { delay: 2600, text: '正在组织语言…' },
-  { delay: 2600, text: '即将完成…' },
-]
-
-/** 从当前主题令牌读取主色（供 lottie 着色） */
-export function accentColor(): string {
-  const el = document.documentElement
-  const v = getComputedStyle(el).getPropertyValue('--hypora-accent').trim()
-  return v || '#E95420'
-}
-
-export function secondaryColor(): string {
-  const el = document.documentElement
-  return getComputedStyle(el).getPropertyValue('--hypora-aubergine').trim() || '#772953'
-}
-
-/** 主题相关转盘动画 SVG（轻量 lottie 替代，无外部依赖） */
-export function thinkingSpinnerSVG(size = 28): string {
-  return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" class="hypora-spinner">
-  <circle cx="12" cy="12" r="9" stroke="var(--hypora-border)" stroke-width="2.5" opacity="0.5"/>
-  <path d="M21 12a9 9 0 0 0-9-9" stroke="var(--hypora-accent)" stroke-width="2.5" stroke-linecap="round"/>
-</svg>`
-}
-
-export function themeNow(): ThemeName {
-  return (document.documentElement.dataset.theme as ThemeName) || 'light'
+export const aiLoadingAnimation = {
+  v: '5.7.4',
+  fr: 30,
+  ip: 0,
+  op: 30,
+  w: 80,
+  h: 30,
+  nm: 'ai-loader',
+  ddd: 0,
+  assets: [],
+  layers: [
+    {
+      ddd: 0, ind: 1, ty: 4, nm: 'dot1', sr: 1,
+      ks: {
+        o: { a: 1, k: [
+          { t: 0, s: [100], i: { x: [0.5], y: [0.5] }, o: { x: [0.5], y: [0.5] } },
+          { t: 5, s: [30], i: { x: [0.5], y: [0.5] }, o: { x: [0.5], y: [0.5] } },
+          { t: 25, s: [30], i: { x: [0.5], y: [0.5] }, o: { x: [0.5], y: [0.5] } },
+          { t: 30, s: [100] }
+        ] },
+        r: { a: 0, k: 0 },
+        p: { a: 0, k: [16, 15, 0] },
+        a: { a: 0, k: [0, 0, 0] },
+        s: { a: 0, k: [100, 100, 100] }
+      },
+      ao: 0,
+      shapes: [
+        { ty: 'gr', it: [
+          { ind: 0, ty: 'el', d: 1, s: { a: 0, k: [12, 12] }, p: { a: 0, k: [0, 0] } },
+          { ty: 'fl', c: { a: 0, k: [0.37, 0.61, 0.94, 1] }, o: { a: 0, k: 100 }, r: 1 },
+          { ty: 'tr', p: { a: 0, k: [0, 0] }, a: { a: 0, k: [0, 0, 0] }, s: { a: 0, k: [100, 100, 100] }, r: { a: 0, k: 0 }, o: { a: 0, k: 100 } }
+        ] }
+      ],
+      ip: 0, op: 30, st: 0, bm: 0
+    },
+    {
+      ddd: 0, ind: 2, ty: 4, nm: 'dot2', sr: 1,
+      ks: {
+        o: { a: 1, k: [
+          { t: 0, s: [30], i: { x: [0.5], y: [0.5] }, o: { x: [0.5], y: [0.5] } },
+          { t: 10, s: [100], i: { x: [0.5], y: [0.5] }, o: { x: [0.5], y: [0.5] } },
+          { t: 15, s: [30], i: { x: [0.5], y: [0.5] }, o: { x: [0.5], y: [0.5] } },
+          { t: 30, s: [30] }
+        ] },
+        r: { a: 0, k: 0 },
+        p: { a: 0, k: [40, 15, 0] },
+        a: { a: 0, k: [0, 0, 0] },
+        s: { a: 0, k: [100, 100, 100] }
+      },
+      ao: 0,
+      shapes: [
+        { ty: 'gr', it: [
+          { ind: 0, ty: 'el', d: 1, s: { a: 0, k: [12, 12] }, p: { a: 0, k: [0, 0] } },
+          { ty: 'fl', c: { a: 0, k: [0.37, 0.61, 0.94, 1] }, o: { a: 0, k: 100 }, r: 1 },
+          { ty: 'tr', p: { a: 0, k: [0, 0] }, a: { a: 0, k: [0, 0, 0] }, s: { a: 0, k: [100, 100, 100] }, r: { a: 0, k: 0 }, o: { a: 0, k: 100 } }
+        ] }
+      ],
+      ip: 0, op: 30, st: 0, bm: 0
+    },
+    {
+      ddd: 0, ind: 3, ty: 4, nm: 'dot3', sr: 1,
+      ks: {
+        o: { a: 1, k: [
+          { t: 0, s: [30], i: { x: [0.5], y: [0.5] }, o: { x: [0.5], y: [0.5] } },
+          { t: 20, s: [100], i: { x: [0.5], y: [0.5] }, o: { x: [0.5], y: [0.5] } },
+          { t: 25, s: [30], i: { x: [0.5], y: [0.5] }, o: { x: [0.5], y: [0.5] } },
+          { t: 30, s: [30] }
+        ] },
+        r: { a: 0, k: 0 },
+        p: { a: 0, k: [64, 15, 0] },
+        a: { a: 0, k: [0, 0, 0] },
+        s: { a: 0, k: [100, 100, 100] }
+      },
+      ao: 0,
+      shapes: [
+        { ty: 'gr', it: [
+          { ind: 0, ty: 'el', d: 1, s: { a: 0, k: [12, 12] }, p: { a: 0, k: [0, 0] } },
+          { ty: 'fl', c: { a: 0, k: [0.37, 0.61, 0.94, 1] }, o: { a: 0, k: 100 }, r: 1 },
+          { ty: 'tr', p: { a: 0, k: [0, 0] }, a: { a: 0, k: [0, 0, 0] }, s: { a: 0, k: [100, 100, 100] }, r: { a: 0, k: 0 }, o: { a: 0, k: 100 } }
+        ] }
+      ],
+      ip: 0, op: 30, st: 0, bm: 0
+    }
+  ]
 }

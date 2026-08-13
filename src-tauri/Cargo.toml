@@ -1,39 +1,33 @@
 [package]
-name = "hypora"
-version = "0.1.0"
-description = "Hypora — content-first WYSIWYG Markdown editor with dual-engine AI"
-authors = ["JingChen"]
+name = "app"
+version = "1.0.0"
+description = "Hypora - Markdown Editor"
+authors = ["Hypora"]
+license = "MIT"
 edition = "2021"
+rust-version = "1.77.2"
 
 [lib]
-name = "hypora_lib"
+name = "app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { version = "2.6.3", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
-tauri-plugin-dialog = "2"
-tauri-plugin-opener = "2"
-tauri-plugin-single-instance = "2"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
-futures-util = "0.3"
-tokio = { version = "1", features = ["full"] }
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
-simplelog = "0.12"
-base64 = "0.22"
+tauri = { version = "2.11.3", features = ["devtools"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-shell = "2"
+tauri-plugin-log = "2"
 chrono = "0.4"
+dirs = "5"
+base64 = "0.22"
+open = "5"
 
 [features]
-# custom-protocol 用于生产构建（frontendDist），开发时走 devUrl；勿删
+default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
-
-[profile.release]
-opt-level = "s"
-lto = true
-strip = true
-codegen-units = 1
-panic = "abort"

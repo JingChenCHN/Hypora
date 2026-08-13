@@ -4,11 +4,15 @@ node_modules/
 # Build output
 dist/
 dist-ssr/
+release/
 *.local
 
 # Tauri
 src-tauri/target/
 src-tauri/gen/
+
+# Claude Code local config
+.claude/
 
 # Logs & editor
 logs/

@@ -1,96 +1,74 @@
 <template>
   <div class="traffic-lights">
-    <button
-      class="light close"
-      :title="'关闭'"
-      @click="close"
-    >
-      <svg width="8" height="8" viewBox="0 0 8 8"><path d="M1 1l6 6M7 1L1 7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+    <button class="tl tl-close" title="关闭" @click="close">
+      <svg class="glyph" viewBox="0 0 12 12"><path d="M3 3 L9 9 M9 3 L3 9" /></svg>
     </button>
-    <button
-      class="light minimize"
-      :title="'最小化'"
-      @click="minimize"
-    >
-      <svg width="8" height="8" viewBox="0 0 8 8"><path d="M1 5.5h6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+    <button class="tl tl-min" title="最小化" @click="minimize">
+      <svg class="glyph" viewBox="0 0 12 12"><path d="M2.5 6 L9.5 6" /></svg>
     </button>
-    <button
-      class="light maximize"
-      :title="maximized ? '还原' : '最大化'"
-      @click="toggleMaximize"
-    >
-      <svg width="8" height="8" viewBox="0 0 8 8"><path d="M1 1h6v6H1z" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
+    <button class="tl tl-max" :title="isMax ? '还原' : '最大化'" @click="toggleMax">
+      <svg v-if="isMax" class="glyph" viewBox="0 0 12 12"><path d="M2.5 5.5 L2.5 2.5 L5.5 2.5 M9.5 6.5 L9.5 9.5 L6.5 9.5" /></svg>
+      <svg v-else class="glyph" viewBox="0 0 12 12"><path d="M6 2.5 L6 9.5 M2.5 6 L9.5 6" /></svg>
     </button>
   </div>
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
-import { tauriAPI } from '@/utils/tauriAPI'
+import { ref, onMounted } from 'vue'
 
-const maximized = ref(false)
-let unMax: (() => void) | null = null
+const isMax = ref(false)
 
-async function close() {
-  await tauriAPI.winClose()
-}
-async function minimize() {
-  await tauriAPI.winMinimize()
-}
-async function toggleMaximize() {
-  await tauriAPI.winToggleMaximize()
-  maximized.value = await tauriAPI.winIsMaximized()
-}
+const close = () => window.electronAPI?.winClose?.()
+const minimize = () => window.electronAPI?.winMinimize?.()
+const toggleMax = () => window.electronAPI?.winMaximizeToggle?.()
 
 onMounted(async () => {
-  try {
-    maximized.value = await tauriAPI.winIsMaximized()
-  } catch {
-    /* 忽略 */
-  }
-  unMax = tauriAPI.onWinMaximized((v) => (maximized.value = v))
+  isMax.value = !!(await (window.electronAPI?.winIsMaximized?.()))
+  window.electronAPI?.onMaximizedChange?.((v: boolean) => {
+    isMax.value = v
+  })
 })
-onBeforeUnmount(() => unMax?.())
 </script>
 
-<style scoped lang="scss">
+<style lang="scss" scoped>
 .traffic-lights {
   display: flex;
-  align-items: center;
   gap: 8px;
-  padding-left: 10px;
-  height: 100%;
+  align-items: center;
+  padding: 0 10px 0 14px;
+  -webkit-app-region: no-drag;
+  flex-shrink: 0;
 }
-
-.light {
+.tl {
   width: 13px;
   height: 13px;
   border-radius: 50%;
-  border: 1px solid rgba(0, 0, 0, 0.12);
-  display: grid;
-  place-items: center;
-  cursor: default;
-  color: rgba(0, 0, 0, 0.55);
-  transition: filter var(--hypora-transition-fast);
-  opacity: 0.95;
-
-  svg {
-    opacity: 0;
-    transition: opacity var(--hypora-transition-fast);
-  }
-
-  &:hover svg {
-    opacity: 1;
-  }
-
-  &.close {
-    background: #ff5f57;
-  }
-  &.minimize {
-    background: #febc2e;
-  }
-  &.maximize {
-    background: #28c840;
-  }
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: filter 0.15s ease;
 }
+.glyph {
+  width: 12px;
+  height: 12px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.glyph path {
+  stroke: rgba(0, 0, 0, 0.55);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  fill: none;
+}
+.traffic-lights:hover .glyph {
+  opacity: 1;
+}
+.tl-close { background: #ff5f57; }
+.tl-min { background: #ffbd2e; }
+.tl-max { background: #28c941; }
+.tl:hover { filter: brightness(0.92); }
 </style>

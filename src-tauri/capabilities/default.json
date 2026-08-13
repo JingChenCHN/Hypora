@@ -1,16 +1,17 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Hypora 能力白名单（§8 安全模型）：最小授权，新能力默认拒绝、显式开放",
+  "description": "Hypora default permissions",
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "core:window:allow-start-dragging",
-    "core:window:allow-minimize",
-    "core:window:allow-toggle-maximize",
-    "core:window:allow-close",
-    "core:window:allow-is-maximized",
-    "core:window:allow-set-always-on-top",
-    "core:window:allow-is-always-on-top"
+    "dialog:default",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "fs:default",
+    "fs:allow-read-text-file",
+    "fs:allow-write-text-file",
+    "shell:default",
+    "shell:allow-open"
   ]
 }

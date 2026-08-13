@@ -1,107 +1,103 @@
 <template>
-  <footer class="statusbar">
-    <div class="sb-left">
-      <span class="sb-item">
-        <span class="dot" :class="{ dirty: doc.dirty }"></span>
-        {{ doc.path ? doc.fileName : '未命名' }}
+  <div class="statusbar">
+    <div class="statusbar-left">
+      <span class="status-item" v-if="!docStore.activeDocument?.isSaved">
+        <el-icon><WarningFilled /></el-icon> 未保存
       </span>
-      <span v-if="doc.savedAt" class="sb-item muted">已保存 {{ timeAgo(doc.savedAt) }}</span>
-    </div>
-    <div class="sb-center">
-      <span class="sb-item">{{ doc.wordCount }} 词</span>
-      <span class="sb-item">{{ doc.charCount }} 字</span>
-      <span class="sb-item">{{ doc.blockCount }} 块</span>
-    </div>
-    <div class="sb-right">
-      <span class="sb-item">
-        <span class="provider-pill" :class="{ local: ai.providerId === 'local' }">
-          <span class="status-light" :class="{ on: ai.sidecar.running }"></span>
-          {{ ai.providerLabel }}
-        </span>
+      <span class="status-item" v-else>
+        <el-icon><CircleCheckFilled /></el-icon> 已保存
       </span>
-      <span class="sb-item muted">v{{ version }}</span>
+      <span class="status-divider"></span>
+      <span class="status-item">自动保存: {{ docStore.autoSave ? '开' : '关' }}</span>
+      <span class="status-divider"></span>
+      <span class="status-item dev-entry" @click="emit('toggleDev')" title="开发者模式 (F12)">
+        <el-icon><Tools /></el-icon> 开发者
+      </span>
     </div>
-  </footer>
+
+    <div class="statusbar-right">
+      <span class="status-item">{{ stats.characters }} 字符</span>
+      <span class="status-divider"></span>
+      <span class="status-item">{{ stats.words }} 词</span>
+      <span class="status-divider"></span>
+      <span class="status-item">{{ stats.lines }} 行</span>
+      <span class="status-divider"></span>
+      <span class="status-item">Markdown</span>
+    </div>
+  </div>
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
 import { useDocumentStore } from '@/stores/document'
-import { useAIStore } from '@/stores/ai'
+import { WarningFilled, CircleCheckFilled, Tools } from '@element-plus/icons-vue'
 
-const doc = useDocumentStore()
-const ai = useAIStore()
-const version = ref('0.1.0')
+defineProps<{
+  stats: {
+    characters: number
+    words: number
+    lines: number
+  }
+}>()
 
-import { tauriAPI } from '@/utils/tauriAPI'
-tauriAPI.getStatus().then((s) => (version.value = s.version)).catch(() => {})
+const emit = defineEmits<{
+  (e: 'toggleDev'): void
+}>()
 
-function timeAgo(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime()
-  if (diff < 60_000) return '刚刚'
-  if (diff < 3600_000) return `${Math.floor(diff / 60_000)} 分钟前`
-  return new Date(iso).toLocaleTimeString()
-}
+const docStore = useDocumentStore()
 </script>
 
-<style scoped lang="scss">
+<style lang="scss" scoped>
 .statusbar {
+  height: 28px;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border-color);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: var(--hypora-statusbar-h);
-  padding: 0 12px;
-  background: var(--hypora-bg-elevated);
-  border-top: 1px solid var(--hypora-border);
-  font-size: 11.5px;
-  color: var(--hypora-fg-muted);
-  flex-shrink: 0;
-  user-select: none;
-}
-.sb-left,
-.sb-center,
-.sb-right {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-}
-.sb-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  &.muted {
-    color: var(--hypora-fg-subtle);
+  padding: 0 16px;
+  font-size: 12px;
+  color: var(--text-muted);
+
+  .statusbar-left, .statusbar-right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
   }
-}
-.dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--hypora-fg-subtle);
-  &.dirty {
-    background: var(--hypora-accent);
+
+  .status-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+
+    &.dev-entry {
+      cursor: pointer;
+      padding: 2px 8px;
+      border-radius: 3px;
+      transition: all 0.2s;
+
+      &:hover {
+        background: var(--bg-tertiary);
+        color: var(--accent-color);
+      }
+    }
+
+    .el-icon {
+      font-size: 14px;
+
+      &.warning {
+        color: #e6a23c;
+      }
+
+      &.success {
+        color: #67c23a;
+      }
+    }
   }
-}
-.provider-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 1px 8px;
-  border-radius: var(--hypora-radius-full);
-  background: var(--hypora-accent-soft);
-  color: var(--hypora-accent);
-  &.local {
-    background: var(--hypora-aubergine);
-    color: var(--hypora-fg);
-  }
-}
-.status-light {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--hypora-fg-subtle);
-  &.on {
-    background: var(--hypora-success);
+
+  .status-divider {
+    width: 1px;
+    height: 14px;
+    background: var(--border-color);
   }
 }
 </style>
