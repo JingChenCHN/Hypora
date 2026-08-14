@@ -146,7 +146,7 @@
       <!-- 窗口置顶 -->
       <el-tooltip content="窗口置顶 (Ctrl+Shift+A)" placement="bottom">
         <el-button text class="toolbar-btn" :class="{ 'is-active': isAlwaysOnTop }" @click="toggleAlwaysOnTop">
-          <span class="pin-icon">📌</span>
+          <el-icon><Top /></el-icon>
         </el-button>
       </el-tooltip>
 
@@ -225,7 +225,7 @@ import { useDocumentStore } from '@/stores/document'
 import { useAIStore } from '@/stores/ai'
 import {
   Document, ArrowDown, DocumentAdd, FolderOpened, Download, DocumentCopy, Files, Picture, PictureFilled,
-  Postcard, MagicStick, Grid, ChatDotSquare, List, Select, Link, Minus,
+  Postcard, MagicStick, Grid, ChatDotSquare, List, Select, Link, Minus, Top,
   Search, Sunny, Moon, Coffee, Brush, Pouring, Menu, FullScreen, EditPen
 } from '@element-plus/icons-vue'
 import { readMdFile } from '@/utils/export'
@@ -388,12 +388,6 @@ async function handleOpenFile(e: Event) {
       background: var(--bg-secondary);
     }
   }
-  .pin-icon {
-    font-size: 15px;
-    line-height: 1;
-    display: inline-block;
-  }
-
   .format-btn span {
     font-size: 14px;
     font-weight: 500;

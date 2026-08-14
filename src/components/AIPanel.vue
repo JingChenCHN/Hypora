@@ -68,7 +68,7 @@
               <el-option label="glm-4v (更强识图)" value="glm-4v" />
             </el-select>
           </div>
-          <p class="config-hint-row">GLM 识图模式：在下方输入区点 📎 上传图片（最多 5 张），输入问题后发送，AI 将详细提取图片内容。默认 Key 已预置，可直接使用。</p>
+          <p class="config-hint-row">GLM 识图模式：在下方输入区点击「图片」按钮上传图片（最多 5 张），输入问题后发送，AI 将详细提取图片内容。默认 Key 已预置，可直接使用。</p>
         </template>
 
         <template v-else>
