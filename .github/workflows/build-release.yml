@@ -31,10 +31,12 @@ jobs:
 
       - name: Build frontend + package EXE
         # 直接 vite build（绕过 vue-tsc -b，其针对 vite.config.ts 的 verbatimModuleSyntax 报错是预存的，
-        # 不影响产物）+ electron-builder 打包 Windows x64（NSIS 安装版 + 便携版）
+        # 不影响产物）+ electron-builder 打包 Windows x64（NSIS 安装版 + 便携版）。
+        # --publish never 禁用 electron-builder 的隐式发布（git tag 会触发它自动发 Release，
+        # 且无 GH_TOKEN 会失败），由下方 softprops/action-gh-release 统一上传产物。
         run: |
           npx vite build
-          npx electron-builder --win --x64 --config.npmRebuild=false
+          npx electron-builder --win --x64 --config.npmRebuild=false --publish never
         env:
           ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
           ELECTRON_BUILDER_BINARIES_MIRROR: https://npmmirror.com/mirrors/electron-builder-binaries/
