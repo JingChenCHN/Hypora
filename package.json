@@ -38,7 +38,8 @@
           "target": "portable",
           "arch": [
             "x64"
-          ]
+          ],
+          "artifactName": "Hypora_${version}_portable.exe"
         }
       ],
       "icon": "public/favicon.ico"
