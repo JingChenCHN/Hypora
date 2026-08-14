@@ -27,3 +27,6 @@ logs/
 .env.*
 !.env.example
 *.key
+
+# Impeccable design hook local state
+.impeccable/
