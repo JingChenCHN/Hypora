@@ -43,13 +43,15 @@ onMounted(async () => {
   width: 13px;
   height: 13px;
   border-radius: 50%;
-  border: none;
+  border: 1px solid var(--border-color);
+  background: var(--bg-secondary);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 0;
-  transition: filter 0.15s ease;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+  color: var(--text-muted);
 }
 .glyph {
   width: 12px;
@@ -58,7 +60,7 @@ onMounted(async () => {
   transition: opacity 0.12s ease;
 }
 .glyph path {
-  stroke: rgba(0, 0, 0, 0.55);
+  stroke: currentColor;
   stroke-width: 1.6;
   stroke-linecap: round;
   stroke-linejoin: round;
@@ -67,8 +69,16 @@ onMounted(async () => {
 .traffic-lights:hover .glyph {
   opacity: 1;
 }
-.tl-close { background: #ff5f57; }
-.tl-min { background: #ffbd2e; }
-.tl-max { background: #28c941; }
-.tl:hover { filter: brightness(0.92); }
+/* 冷淡单色：无彩色 accent。关闭用墨色表达（最重的操作），最小化/最大化用面加深 */
+.tl-close:hover {
+  background: var(--text-primary);
+  border-color: var(--text-primary);
+  color: var(--bg-primary);
+}
+.tl-min:hover,
+.tl-max:hover {
+  background: var(--bg-tertiary);
+  border-color: var(--text-muted);
+  color: var(--text-primary);
+}
 </style>
