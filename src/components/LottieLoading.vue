@@ -19,7 +19,7 @@ const props = withDefaults(
     animation: any
     visible?: boolean
     label?: string
-    size?: 'small' | 'large'
+    size?: 'small' | 'large' | 'icon'
   }>(),
   { visible: true, label: '', size: 'small' }
 )
@@ -93,6 +93,9 @@ onBeforeUnmount(() => stop())
 .lottie-loading.size-large {
   flex-direction: column;
 }
+.lottie-loading.size-icon {
+  flex-direction: column;
+}
 .lottie-container {
   flex-shrink: 0;
 }
@@ -103,6 +106,10 @@ onBeforeUnmount(() => stop())
 .lottie-loading.size-large .lottie-container {
   width: 180px;
   height: 180px;
+}
+.lottie-loading.size-icon .lottie-container {
+  width: 18px;
+  height: 18px;
 }
 .lottie-label {
   line-height: 1.4;
@@ -116,6 +123,15 @@ onBeforeUnmount(() => stop())
   width: 56px;
   height: 22px;
   flex-shrink: 0;
+}
+.lottie-loading.size-icon .css-dots {
+  width: 18px;
+  height: 18px;
+  gap: 3px;
+}
+.lottie-loading.size-icon .css-dots span {
+  width: 4px;
+  height: 4px;
 }
 .css-dots span {
   width: 7px;

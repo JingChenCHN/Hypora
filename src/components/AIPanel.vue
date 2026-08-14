@@ -173,7 +173,7 @@ import { useDocumentStore } from '@/stores/document'
 import { mdToHtml } from '@/utils/markdown'
 import { ElMessage } from 'element-plus'
 import LottieLoading from './LottieLoading.vue'
-import assistantAnim from '@/assets/ai-assistant.json'
+import assistantAnim from '@/assets/ai-assistant-bubble.json'
 import { aiLoadingAnimation } from '@/assets/aiLoading'
 
 const props = defineProps<{ visible: boolean; editor: any }>()

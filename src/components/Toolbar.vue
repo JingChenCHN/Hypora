@@ -159,8 +159,8 @@
 
       <!-- AI 助手 -->
       <el-tooltip content="AI 助手 (Ctrl+J)" placement="bottom">
-        <el-button text class="toolbar-btn" :class="{ 'is-active': aiStore.panelVisible }" @click="aiStore.togglePanel()">
-          <el-icon><ChatDotSquare /></el-icon>
+        <el-button text class="toolbar-btn ai-btn" :class="{ 'is-active': aiStore.panelVisible }" @click="aiStore.togglePanel()">
+          <LottieLoading :animation="assistantAnim" size="icon" />
         </el-button>
       </el-tooltip>
 
@@ -231,6 +231,8 @@ import {
 import { readMdFile } from '@/utils/export'
 import TrafficLights from './TrafficLights.vue'
 import ImageBase64 from './ImageBase64.vue'
+import LottieLoading from './LottieLoading.vue'
+import assistantAnim from '@/assets/ai-assistant.json'
 import { ElMessage } from 'element-plus'
 
 const emit = defineEmits<{
