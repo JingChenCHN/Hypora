@@ -1,6 +1,16 @@
 import { saveAs } from 'file-saver'
 // html2canvas / jspdf 仅在导出 PDF/图片时使用,改为函数内动态 import(),避免拖慢首屏启动
 
+// 导出签名：出现在 HTML/PDF/图片 导出产物底部（不写入 Markdown 原文，避免污染内容）
+const EXPORT_SIGNATURE = '由 Hypora 提供支持'
+const EXPORT_CONTACT = '更多支持请联系 hemo8212@outlook.com'
+// 签名块 HTML（冷淡单色风格：发丝线上方、muted 小字、居中）
+const SIGNATURE_HTML = `<div class="hypora-signature">
+  <div class="sig-line"></div>
+  <div class="sig-main">由 Hypora 提供支持</div>
+  <div class="sig-sub">更多支持请联系 hemo8212@outlook.com</div>
+</div>`
+
 // 统一保存文件：Electron 用原生保存对话框（可选位置），Web 用浏览器下载
 // 返回 true 表示已保存，false 表示用户取消
 export async function saveFile(filename: string, content: string, mime: string = 'text/plain;charset=utf-8'): Promise<boolean> {
@@ -83,14 +93,47 @@ export function buildHTML(content: string, title: string = 'Document', theme: st
     .table-wrapper { overflow-x: auto; margin: 16px 0; }
     .math-block { margin: 16px 0; text-align: center; overflow-x: auto; }
     .mermaid { margin: 16px 0; text-align: center; }
+    /* 导出签名：发丝线上方、muted 小字、居中，冷淡单色 */
+    .hypora-signature {
+      margin-top: 48px; padding-top: 16px;
+      border-top: 1px solid var(--hair);
+      text-align: center;
+    }
+    .hypora-signature .sig-main {
+      font-size: 12px; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 2px;
+    }
+    .hypora-signature .sig-sub {
+      font-size: 11px; color: var(--muted); opacity: 0.8;
+    }
   </style>
 </head>
 <body>
   <div class="markdown-body">
     ${content}
+    ${SIGNATURE_HTML}
   </div>
 </body>
 </html>`
+}
+
+// 导出 PDF/图片 前：给元素临时注入签名块（html2canvas 截图后移除，不污染文档）
+function withSignature(el: HTMLElement, fn: () => Promise<boolean>): Promise<boolean> {
+  const div = document.createElement('div')
+  div.innerHTML = SIGNATURE_HTML
+  const node = div.firstElementChild as HTMLElement
+  // 签名样式内联（截图时无需全局样式表，随元素计算）
+  node.style.marginTop = '48px'
+  node.style.paddingTop = '16px'
+  node.style.borderTop = '1px solid ' + getComputedStyle(el).getPropertyValue('--border-color') || '#e3e1dd'
+  node.style.textAlign = 'center'
+  const main = node.querySelector('.sig-main') as HTMLElement
+  const sub = node.querySelector('.sig-sub') as HTMLElement
+  if (main) { main.style.fontSize = '12px'; main.style.letterSpacing = '0.08em'; main.style.color = 'var(--text-muted)' }
+  if (sub) { sub.style.fontSize = '11px'; sub.style.color = 'var(--text-muted)'; sub.style.opacity = '0.8' }
+  el.appendChild(node)
+  // 滚动到底部，确保签名块进入截图可视区
+  node.scrollIntoView({ block: 'end' })
+  return fn().finally(() => { node.remove() })
 }
 
 // 导出HTML文件
@@ -100,68 +143,72 @@ export async function exportHTML(content: string, title: string = 'Document', th
 
 // 导出PDF（Electron 用原生保存对话框，Web 用浏览器下载）
 export async function exportPDF(element: HTMLElement, filename: string = 'document'): Promise<boolean> {
-  const [{ default: html2canvas }, { default: jsPDF }] = await Promise.all([import('html2canvas'), import('jspdf')])
-  const canvas = await html2canvas(element, {
-    scale: 2,
-    useCORS: true,
-    logging: false,
-    backgroundColor: getComputedStyle(document.body).backgroundColor
-  })
+  return withSignature(element, async () => {
+    const [{ default: html2canvas }, { default: jsPDF }] = await Promise.all([import('html2canvas'), import('jspdf')])
+    const canvas = await html2canvas(element, {
+      scale: 2,
+      useCORS: true,
+      logging: false,
+      backgroundColor: getComputedStyle(document.body).backgroundColor
+    })
 
-  const imgData = canvas.toDataURL('image/png')
-  const pdf = new jsPDF('p', 'mm', 'a4')
-  const imgWidth = 210
-  const pageHeight = 297
-  const imgHeight = (canvas.height * imgWidth) / canvas.width
-  let heightLeft = imgHeight
-  let position = 0
+    const imgData = canvas.toDataURL('image/png')
+    const pdf = new jsPDF('p', 'mm', 'a4')
+    const imgWidth = 210
+    const pageHeight = 297
+    const imgHeight = (canvas.height * imgWidth) / canvas.width
+    let heightLeft = imgHeight
+    let position = 0
 
-  pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight)
-  heightLeft -= pageHeight
-
-  while (heightLeft >= 0) {
-    position = heightLeft - imgHeight
-    pdf.addPage()
     pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight)
     heightLeft -= pageHeight
-  }
 
-  const electronAPI = (window as any).electronAPI
-  if (electronAPI?.showSaveDialog && electronAPI?.writeBinaryFile) {
-    const result = await electronAPI.showSaveDialog(`${filename}.pdf`)
-    if (!result || result.canceled || !result.filePath) return false
-    // jsPDF output arraybuffer → base64
-    const ab = pdf.output('arraybuffer')
-    const base64 = btoa(String.fromCharCode(...new Uint8Array(ab)))
-    const r = await electronAPI.writeBinaryFile(result.filePath, base64)
-    return !!(r && r.success)
-  }
-  pdf.save(`${filename}.pdf`)
-  return true
+    while (heightLeft >= 0) {
+      position = heightLeft - imgHeight
+      pdf.addPage()
+      pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight)
+      heightLeft -= pageHeight
+    }
+
+    const electronAPI = (window as any).electronAPI
+    if (electronAPI?.showSaveDialog && electronAPI?.writeBinaryFile) {
+      const result = await electronAPI.showSaveDialog(`${filename}.pdf`)
+      if (!result || result.canceled || !result.filePath) return false
+      // jsPDF output arraybuffer → base64
+      const ab = pdf.output('arraybuffer')
+      const base64 = btoa(String.fromCharCode(...new Uint8Array(ab)))
+      const r = await electronAPI.writeBinaryFile(result.filePath, base64)
+      return !!(r && r.success)
+    }
+    pdf.save(`${filename}.pdf`)
+    return true
+  })
 }
 
 // 导出图片（Electron 用原生保存对话框，Web 用浏览器下载）
 export async function exportImage(element: HTMLElement, filename: string = 'document'): Promise<boolean> {
-  const { default: html2canvas } = await import('html2canvas')
-  const canvas = await html2canvas(element, {
-    scale: 2,
-    useCORS: true,
-    logging: false,
-    backgroundColor: getComputedStyle(document.body).backgroundColor
-  })
+  return withSignature(element, async () => {
+    const { default: html2canvas } = await import('html2canvas')
+    const canvas = await html2canvas(element, {
+      scale: 2,
+      useCORS: true,
+      logging: false,
+      backgroundColor: getComputedStyle(document.body).backgroundColor
+    })
 
-  const electronAPI = (window as any).electronAPI
-  if (electronAPI?.showSaveDialog && electronAPI?.writeBinaryFile) {
-    const result = await electronAPI.showSaveDialog(`${filename}.png`)
-    if (!result || result.canceled || !result.filePath) return false
-    const base64 = canvas.toDataURL('image/png').split(',')[1]
-    const r = await electronAPI.writeBinaryFile(result.filePath, base64)
-    return !!(r && r.success)
-  }
-  return new Promise<boolean>((resolve) => {
-    canvas.toBlob((blob: Blob | null) => {
-      if (blob) { saveAs(blob, `${filename}.png`); resolve(true) }
-      else resolve(false)
+    const electronAPI = (window as any).electronAPI
+    if (electronAPI?.showSaveDialog && electronAPI?.writeBinaryFile) {
+      const result = await electronAPI.showSaveDialog(`${filename}.png`)
+      if (!result || result.canceled || !result.filePath) return false
+      const base64 = canvas.toDataURL('image/png').split(',')[1]
+      const r = await electronAPI.writeBinaryFile(result.filePath, base64)
+      return !!(r && r.success)
+    }
+    return new Promise<boolean>((resolve) => {
+      canvas.toBlob((blob: Blob | null) => {
+        if (blob) { saveAs(blob, `${filename}.png`); resolve(true) }
+        else resolve(false)
+      })
     })
   })
 }
