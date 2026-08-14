@@ -319,7 +319,7 @@ onBeforeUnmount(() => {
 
 <style lang="scss" scoped>
 .search-panel {
-  position: absolute;
+  position: fixed;
   top: 60px;
   right: 20px;
   z-index: 1000;
