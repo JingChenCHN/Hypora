@@ -36,8 +36,10 @@
 
 Windows 便携版 EXE 免安装、开箱即用，含完整桌面能力（.md 双击关联、窗口置顶、原生保存对话框、PDF/图片导出）。
 
-- **有现成安装包**：从 [GitHub Releases](https://github.com/JingChenCHN/Hypora/releases) 下载 `Hypora.exe`（若已发布 v1.0.0 便携版），双击运行即可
-- **无安装包 / 想自己打**：在 Windows 环境按「方式三」源码编译，运行 `build-exe.bat` 或 `npm run electron:build` 即生成 EXE（详见下）
+- **直接下载现成安装包**（[GitHub Releases](https://github.com/JingChenCHN/Hypora/releases)）：
+  - **`Hypora_<版本>_portable.exe`** — 便携版，免安装，双击即用（推荐）
+  - **`Hypora.Setup.<版本>.exe`** — NSIS 安装版，可自定义安装目录、创建桌面/开始菜单快捷方式
+- **想自己编译**：在 Windows 环境按「方式三」源码编译，运行 `build-exe.bat` 或 `npm run electron:build` 即生成 EXE（详见下）
 
 运行后可选：用同目录的 **`关联MD文件.bat`** 将 `.md` 关联到 Hypora（双击 .md 自动用 Hypora 打开；不需要时运行 `移除MD关联.bat` 解除）。
 
