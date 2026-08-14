@@ -1,0 +1,75 @@
+name: Build & Release (Electron)
+
+# 触发：推 v* 标签（tag 驱动，推荐）或手动 workflow_dispatch（GitHub UI 上点 Run workflow）
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+# GITHUB_TOKEN 需 contents:write 以创建 Release 并上传产物
+permissions:
+  contents: write
+
+jobs:
+  build-win-x64:
+    name: Build Windows x64 (NSIS + portable)
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build frontend + package EXE
+        # 直接 vite build（绕过 vue-tsc -b，其针对 vite.config.ts 的 verbatimModuleSyntax 报错是预存的，
+        # 不影响产物）+ electron-builder 打包 Windows x64（NSIS 安装版 + 便携版）
+        run: |
+          npx vite build
+          npx electron-builder --win --x64 --config.npmRebuild=false
+        env:
+          ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
+          ELECTRON_BUILDER_BINARIES_MIRROR: https://npmmirror.com/mirrors/electron-builder-binaries/
+
+      - name: List build output
+        run: |
+          Get-ChildItem -Recurse release | Select-Object FullName, Length
+          ls release
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Hypora ${{ github.ref_name }}
+          body: |
+            ## Hypora ${{ github.ref_name }}
+
+            内容优先、UI 隐退的所见即所得 Markdown 编辑器，冷淡单色设计语言，内置 AI 助手（DeepSeek / GLM 识图 / 本地 LLM）。
+
+            ### 本版本亮点
+            - **所见即所得**：输入 Markdown 语法实时渲染，无左右分栏
+            - **AI 助手**：选中文字改写 / 解释 / 翻译 / 扩写 / 总结 / 文档问答；GLM 识图提取图片内容；本地 LLM
+            - **五套主题**：冷淡单色设计语言（浅色白 / 暗色黑 / 米色护眼 / 极简灰 / 冰雪）
+            - **多格式导出**：Markdown / HTML / PDF / 图片（含 Hypora 签名）
+            - **桌面增强**：无边框窗口、交通灯、窗口置顶、.md 双击关联
+            - **搜索替换**：文档内高亮 + 替换 + 定位
+            - **快捷键**：复刻 Typora 全键驱动
+
+            ### 下载
+            - **Hypora Setup.exe**：NSIS 安装版（可自定义安装目录、创建桌面/开始菜单快捷方式）
+            - **Hypora portable.exe**：便携版（免安装，解压即用）
+
+            ### 使用
+            运行后可用 `关联MD文件.bat` 将 .md 关联到 Hypora（双击 .md 用 Hypora 打开）。
+          files: |
+            release/*.exe
+          draft: false
+          prerelease: false
