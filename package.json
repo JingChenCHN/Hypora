@@ -12,7 +12,7 @@
     "electron:dev": "concurrently -k \"npm run dev\" \"wait-on http://localhost:5300 && cross-env NODE_ENV=development electron .\"",
     "icon": "node scripts/generate-icon.cjs",
     "pack:win": "node scripts/build-with-icon.cjs",
-    "electron:build": "npm run build && electron-builder"
+    "electron:build": "npm run build && electron-builder --config.npmRebuild=false"
   },
   "build": {
     "appId": "com.hypora.app",
