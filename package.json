@@ -58,7 +58,8 @@
     "linux": {
       "target": "deb",
       "icon": "public"
-    }
+    },
+    "electronDist": "node_modules/electron/dist"
   },
   "overrides": {
     "katex": "$katex"
