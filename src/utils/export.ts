@@ -175,8 +175,17 @@ export async function exportPDF(element: HTMLElement, filename: string = 'docume
       const result = await electronAPI.showSaveDialog(`${filename}.pdf`)
       if (!result || result.canceled || !result.filePath) return false
       // jsPDF output arraybuffer → base64
+      // 注意：不能用 String.fromCharCode(...bytes) 一次性展开 —— 大数组（几十万字节）
+      // 会超过 V8 函数参数上限（约 65535），抛 "Maximum call stack size exceeded"。
+      // 分批（32KB）转换规避。
       const ab = pdf.output('arraybuffer')
-      const base64 = btoa(String.fromCharCode(...new Uint8Array(ab)))
+      const bytes = new Uint8Array(ab)
+      const CHUNK = 0x8000 // 32KB，远低于参数上限
+      let binary = ''
+      for (let i = 0; i < bytes.length; i += CHUNK) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK))
+      }
+      const base64 = btoa(binary)
       const r = await electronAPI.writeBinaryFile(result.filePath, base64)
       return !!(r && r.success)
     }
