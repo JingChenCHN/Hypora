@@ -39,7 +39,7 @@ Windows 便携版 EXE 免安装、开箱即用，含完整桌面能力（.md 双
 - **直接下载现成安装包**（[GitHub Releases](https://github.com/JingChenCHN/Hypora/releases)）：
   - **`Hypora_<版本>_portable.exe`** — 便携版，免安装，双击即用（推荐）
   - **`Hypora.Setup.<版本>.exe`** — NSIS 安装版，可自定义安装目录、创建桌面/开始菜单快捷方式
-- **想自己编译**：在 Windows 环境按「方式三」源码编译，运行 `build-exe.bat` 或 `npm run electron:build` 即生成 EXE（详见下）
+- **想自己编译**：在 Windows 环境按「方式三」源码编译，运行 `build-exe.bat` 或 `npm run electron:build`（便携版用 `npm run electron:build:portable`）即生成 EXE（详见下）
 
 运行后可选：用同目录的 **`关联MD文件.bat`** 将 `.md` 关联到 Hypora（双击 .md 自动用 Hypora 打开；不需要时运行 `移除MD关联.bat` 解除）。
 
@@ -77,7 +77,9 @@ npm run preview              # 本地预览生产构建
 build-exe.bat
 # 或：electron-builder 打包 → release/（含 NSIS 安装版 + 便携版）
 npm run electron:build
-# 注意：npm run pack:win 仅限本机已构建过 Electron（已有 electron/winCodeSign 缓存）的开发者，
+# 或：只打便携版（免安装、双击即用，产物 Hypora_<版本>_portable.exe）
+npm run electron:build:portable
+# 注意：npm run pack:win / pack:portable 仅限本机已构建过 Electron（已有 electron/winCodeSign 缓存）的开发者，
 # 新 clone 仓库后首次打包请用上面的 build-exe.bat 或 npm run electron:build
 ```
 
@@ -93,6 +95,7 @@ npm run electron:build
 |---|---|---|
 | `npm run build` | Web 版静态文件 | `dist/` |
 | `npm run electron:build` | Electron 安装版 + 便携版 | `release/` |
+| `npm run electron:build:portable` | 仅 Electron 便携版（免安装） | `release/` |
 | `build-exe.bat` | Windows 一键构建（自带镜像，推荐） | `release/` |
 | `npm run pack:win` | Windows 打包（需已有 Electron 缓存） | `release/` |
 | `node scripts/build-web.cjs` | Web 版完整发布包（含 `sourcecode/`） | `release/` |
