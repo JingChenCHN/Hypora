@@ -7,6 +7,12 @@ const os = require('os')
 const { packSourcecode } = require('./pack-sourcecode.cjs')
 
 const root = path.join(__dirname, '..')
+
+// 打包前静默结束正在运行的 Hypora.exe（否则 exe 被锁 → rcedit/重命名失败，图标注入不生效）
+try {
+  require('./kill-hypora.cjs')
+} catch {}
+
 // rcedit 路径（electron-builder 缓存中，含图标注入能力）
 const RCEDIT = path.join(os.homedir(), 'AppData/Local/electron-builder/Cache/winCodeSign/310595615/rcedit-x64.exe')
 

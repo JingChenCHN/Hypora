@@ -83,6 +83,10 @@ npm run electron:build:portable
 # 新 clone 仓库后首次打包请用上面的 build-exe.bat 或 npm run electron:build
 ```
 
+> **打包前会自动结束正在运行的 Hypora.exe**（`node scripts/kill-hypora.cjs`）：若 Hypora 仍开着，exe 会被进程锁定，导致
+> electron-builder 替换文件时报 `EPERM: unlink`，图标注入步骤失败，产物留下 Electron 原版图标。脚本已接入
+> `electron:build` / `electron:build:portable` / `build-exe.bat` / `build-with-icon.cjs`，无运行中进程时自动跳过、不报错。
+
 > **国内网络提示**：Electron 二进制下载慢时，可设置镜像：
 > ```
 > set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/

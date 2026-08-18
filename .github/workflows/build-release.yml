@@ -36,6 +36,7 @@ jobs:
         # 且无 GH_TOKEN 会失败），由下方 softprops/action-gh-release 统一上传产物。
         run: |
           npx vite build
+          node scripts/kill-hypora.cjs
           npx electron-builder --win --x64 --config.npmRebuild=false --publish never
         env:
           ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/

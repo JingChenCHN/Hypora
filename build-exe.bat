@@ -7,6 +7,9 @@ set ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-buil
 set ELECTRON_CACHE=%~dp0.electron-cache
 set ELECTRON_BUILDER_CACHE=%~dp0.electron-builder-cache
 
+echo 结束正在运行的Hypora进程（避免exe被锁导致图标/重命名失败）...
+taskkill /IM Hypora.exe /F /T >nul 2>&1
+
 echo 开始构建前端资源...
 call npx vite build
 
