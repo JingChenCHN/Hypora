@@ -49,6 +49,29 @@ export async function cloudSave(content: string, filename: string = 'document'):
   }
 }
 
+// 云端文件列表
+export async function cloudList(): Promise<{ name: string; size: number; mtime: number }[]> {
+  const res = await fetch('/api/cloud/list')
+  const j = await res.json().catch(() => ({}))
+  return Array.isArray(j.files) ? j.files : []
+}
+
+// 读取某个云端文件内容
+export async function cloudRead(name: string): Promise<{ name: string; content: string }> {
+  const res = await fetch(`/api/cloud/file?name=${encodeURIComponent(name)}`)
+  const j = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(j?.error || `HTTP ${res.status}`)
+  return { name: j.name || name, content: j.content ?? '' }
+}
+
+// 删除某个云端文件
+export async function cloudDelete(name: string): Promise<{ ok: boolean; error?: string }> {
+  const res = await fetch(`/api/cloud/file?name=${encodeURIComponent(name)}`, { method: 'DELETE' })
+  const j = await res.json().catch(() => ({}))
+  if (!res.ok) return { ok: false, error: j?.error || `HTTP ${res.status}` }
+  return { ok: true }
+}
+
 // 导出HTML文件（返回完整 HTML 字符串）
 export function buildHTML(content: string, title: string = 'Document', theme: string = 'light'): string {
   return `<!DOCTYPE html>

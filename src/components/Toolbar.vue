@@ -15,6 +15,7 @@
             <el-dropdown-item command="open"><el-icon><FolderOpened /></el-icon> 打开本地文件</el-dropdown-item>
             <el-dropdown-item command="save" divided><el-icon><Download /></el-icon> 保存为MD</el-dropdown-item>
             <el-dropdown-item command="cloudSave"><el-icon><Cloudy /></el-icon> 云端保存到服务器</el-dropdown-item>
+            <el-dropdown-item command="cloudFiles"><el-icon><Files /></el-icon> 云端文件</el-dropdown-item>
             <el-dropdown-item command="exportHtml"><el-icon><DocumentCopy /></el-icon> 导出HTML</el-dropdown-item>
             <el-dropdown-item command="exportPdf"><el-icon><Files /></el-icon> 导出PDF</el-dropdown-item>
             <el-dropdown-item command="exportImage"><el-icon><Picture /></el-icon> 导出图片</el-dropdown-item>
@@ -296,6 +297,9 @@ function handleFileCommand(command: string) {
       break
     case 'cloudSave':
       emit('export', 'cloud')
+      break
+    case 'cloudFiles':
+      emit('export', 'cloudFiles')
       break
     case 'exportHtml':
       emit('export', 'html')

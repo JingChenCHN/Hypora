@@ -32,6 +32,7 @@
     <Statusbar :stats="stats" @toggle-dev="devVisible = true" />
 
     <DevPanel v-model:visible="devVisible" />
+    <CloudFiles :visible="cloudVisible" @close="cloudVisible = false" />
   </div>
 </template>
 
@@ -49,6 +50,7 @@ import Editor from './components/Editor.vue'
 import Statusbar from './components/Statusbar.vue'
 import SearchPanel from './components/SearchPanel.vue'
 import DevPanel from './components/DevPanel.vue'
+import CloudFiles from './components/CloudFiles.vue'
 // AI 面板默认隐藏：异步组件 + 首次打开才挂载，把 lottie-web / 动画 JSON 移出首屏启动路径
 const AIPanel = defineAsyncComponent(() => import('./components/AIPanel.vue'))
 import type { OutlineItem } from '@/utils/markdown'
@@ -65,6 +67,7 @@ const activeHeading = ref('')
 const stats = ref({ characters: 0, words: 0, lines: 0 })
 const searchVisible = ref(false)
 const devVisible = ref(false)
+const cloudVisible = ref(false)
 
 // AI 面板首次可见后才挂载（之后保持存活以保留收起/展开动画）；
 // 面板状态持久化在 aiStore，若上次启动时面板是打开的，启动时即加载
@@ -308,6 +311,9 @@ async function handleExport(type: string) {
         }
         return
       }
+      case 'cloudFiles':
+        cloudVisible.value = true
+        return
       case 'html':
         ok = await exportHTML(editorElement?.innerHTML || '', filename, docStore.currentTheme)
         break

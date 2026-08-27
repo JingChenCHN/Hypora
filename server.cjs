@@ -144,6 +144,65 @@ function applyCloudSave(req, res) {
   })
 }
 
+// ===== 云存储 · 列表 / 读取 / 删除 =====
+function sanitizeCloudName(raw) {
+  let name = String(raw || 'document').split(/[\\/]/).pop() || 'document'
+  name = name.replace(/[<>:"/\\|?*]/g, '-').replace(/[^\x20-\x7E一-龥-]/g, '').replace(/[\s.]+$/g, '').trim() || 'document'
+  if (!/\.md$/i.test(name)) name += '.md'
+  return name
+}
+function cloudFile(name) {
+  const target = path.join(CLOUD_ROOT, name)
+  return target.startsWith(CLOUD_ROOT) ? target : null
+}
+
+// GET /api/cloud/list → { files: [{ name, size, mtime }] }（按修改时间倒序）
+function applyCloudList(req, res) {
+  fs.readdir(CLOUD_ROOT, (err, names) => {
+    if (err) {
+      // 目录尚不存在 = 还没有云端文件
+      if (err.code === 'ENOENT') {
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
+        return res.end(JSON.stringify({ files: [] }))
+      }
+      return jsonErr(res, 500, 'readdir failed: ' + err.message)
+    }
+    const mdNames = names.filter((n) => /\.md$/i.test(n))
+    Promise.all(mdNames.map((n) => new Promise((resolveP) => {
+      fs.stat(path.join(CLOUD_ROOT, n), (err2, st) => {
+        resolveP(err2 ? { name: n, size: 0, mtime: 0 } : { name: n, size: st.size, mtime: st.mtimeMs })
+      })
+    }))).then((files) => {
+      files.sort((a, b) => b.mtime - a.mtime)
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify({ files }))
+    })
+  })
+}
+
+// GET /api/cloud/file?name=… → { name, content }   DELETE → { ok }
+function applyCloudFile(req, res) {
+  const q = req.url.split('?')[1] || ''
+  const safe = sanitizeCloudName(new URLSearchParams(q).get('name') || '')
+  const target = safe ? cloudFile(safe) : null
+  if (!target) return jsonErr(res, 400, 'bad name')
+  if (req.method === 'GET') {
+    fs.readFile(target, 'utf8', (err, content) => {
+      if (err) return jsonErr(res, 404, 'not found')
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify({ name: safe, content }))
+    })
+  } else if (req.method === 'DELETE') {
+    fs.unlink(target, (err) => {
+      if (err) return jsonErr(res, 404, 'not found')
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify({ ok: true }))
+    })
+  } else {
+    jsonErr(res, 405, 'Method Not Allowed')
+  }
+}
+
 http.createServer((req, res) => {
   const urlPath = req.url.split('?')[0]
   if (urlPath === '/api/ai' || urlPath.startsWith('/api/ai/')) {
@@ -152,5 +211,11 @@ http.createServer((req, res) => {
   if (urlPath === '/api/cloud/save') {
     return applyCloudSave(req, res)
   }
+  if (urlPath === '/api/cloud/list') {
+    return applyCloudList(req, res)
+  }
+  if (urlPath === '/api/cloud/file') {
+    return applyCloudFile(req, res)
+  }
   return serveStatic(req, res)
-}).listen(PORT, () => console.log('Hypora Web 已启动(静态+AI代理): http://localhost:' + PORT))
+}).listen(PORT, () => console.log('Hypora Web 已启动(静态+AI代理+云存储): http://localhost:' + PORT))
