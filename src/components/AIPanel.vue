@@ -30,7 +30,7 @@
           <label>引擎</label>
           <div class="provider-switch">
             <button class="prov-btn" :class="{ active: aiStore.provider === 'deepseek' }" @click="aiStore.setProvider('deepseek')">DeepSeek</button>
-            <button class="prov-btn" :class="{ active: aiStore.provider === 'glm' }" @click="aiStore.setProvider('glm')">GLM 识图</button>
+            <button class="prov-btn" :class="{ active: aiStore.provider === 'glm' }" @click="aiStore.setProvider('glm')">GLM</button>
             <button class="prov-btn" :class="{ active: aiStore.provider === 'local' }" @click="aiStore.setProvider('local')">本地 LLM</button>
           </div>
         </div>
@@ -64,6 +64,8 @@
           <div class="config-row">
             <label>模型</label>
             <el-select v-model="aiStore.glmModel" size="small" filterable allow-create @change="aiStore.saveToLocal()" style="flex:1">
+              <el-option label="glm-5.3-flash (免费对话)" value="glm-5.3-flash" />
+              <el-option label="glm-5.3" value="glm-5.3" />
               <el-option label="glm-4-flash (免费文本)" value="glm-4-flash" />
               <el-option label="glm-4v-flash (免费识图)" value="glm-4v-flash" />
               <el-option label="glm-4v (更强识图)" value="glm-4v" />
@@ -74,7 +76,7 @@
             <el-button size="small" class="test-btn" @click="testGlm">测试</el-button>
             <span class="conn-status" :class="{ ok: glmConnOk }">{{ glmConnStatus }}</span>
           </div>
-          <p class="config-hint-row">GLM 识图模式：在下方输入区点击「图片」按钮上传图片（最多 5 张）后发送，AI 将详细提取图片内容。文本对话选 glm-4-flash。在本页填写你的智谱 API Key，Key 仅存于本地浏览器，经同源代理转发、不落服务器。</p>
+          <p class="config-hint-row">GLM 既是对话助手也可识图：对话默认用 <code>glm-5.3-flash</code>；如需提取图片内容，把模型切到 <code>glm-4v-flash</code> 并在输入区点「图片」上传（最多 5 张）。在本页填写你的智谱 API Key，Key 仅存于本地浏览器、经同源代理转发，不落服务器。</p>
         </template>
 
         <template v-else>
@@ -101,7 +103,7 @@
         <div v-if="aiStore.messages.length === 0" class="ai-empty">
           <LottieLoading :animation="assistantAnim" size="large" class="empty-anim" />
           <p class="ai-empty-main">选中编辑器文字，让 AI 帮你<br />改写 · 解释 · 翻译 · 扩写 · 总结</p>
-          <p class="ai-empty-sub">或在下方直接提问 · GLM 识图模式可上传图片</p>
+          <p class="ai-empty-sub">或在下方直接提问 · GLM 可对话 / 切识图模型上传图片</p>
         </div>
 
         <div v-for="(msg, i) in aiStore.messages" :key="i" class="ai-msg" :class="msg.role">

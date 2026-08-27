@@ -12,7 +12,7 @@ const DEFAULT_BASE_LOCAL = 'http://127.0.0.1:8899'
 // GLM(智谱)识图：GLM-4V-Flash，多模态，支持图文
 const DEFAULT_BASE_GLM = 'https://open.bigmodel.cn/api/paas/v4'
 const DEFAULT_GLM_KEY = ''
-const DEFAULT_GLM_MODEL = 'glm-4v-flash'
+const DEFAULT_GLM_MODEL = 'glm-5.3-flash'
 
 export type AIProvider = 'deepseek' | 'local' | 'glm'
 
@@ -58,9 +58,11 @@ export const useAIStore = defineStore('ai', () => {
     baseUrl.value = b || (provider.value === 'local' ? DEFAULT_BASE_LOCAL : provider.value === 'glm' ? DEFAULT_BASE_GLM : DEFAULT_BASE_DEEPSEEK)
     const lm = localStorage.getItem('hypora_ai_localmodel')
     localModel.value = lm || ''
-    // GLM key 独立持久化（与 DeepSeek key 分开）
+    // GLM key/model 独立持久化（与 DeepSeek key 分开），重启后恢复用户配置
     const gk = localStorage.getItem('hypora_ai_glmkey')
     if (gk) glmKey.value = gk
+    const gm = localStorage.getItem('hypora_ai_glmmodel')
+    if (gm) glmModel.value = gm
     const pv = localStorage.getItem('hypora_ai_panel')
     panelVisible.value = pv === 'true'
   }
@@ -89,7 +91,7 @@ export const useAIStore = defineStore('ai', () => {
   const MAX_IMAGE_BYTES = 10 * 1024 * 1024 // 10MB / 张
 
   function addImage(dataUrl: string): { ok: boolean; error?: string } {
-    if (provider.value !== 'glm') return { ok: false, error: '请先切换到 GLM 识图模式' }
+    if (provider.value !== 'glm') return { ok: false, error: '请先切换到 GLM 引擎（并选识图模型）' }
     if (pendingImages.value.length >= MAX_IMAGES) return { ok: false, error: `最多 ${MAX_IMAGES} 张图片` }
     // data URL base64 部分大小估算（非精确，仅拦截超大文件）
     const b64 = dataUrl.split(',')[1] || ''
