@@ -39,7 +39,7 @@
 import { ref, watch, onMounted, onErrorCaptured, defineAsyncComponent } from 'vue'
 import { useDocumentStore } from '@/stores/document'
 import { copyCode } from '@/utils/markdown'
-import { exportMarkdown, exportHTML, exportPDF, exportImage } from '@/utils/export'
+import { exportMarkdown, exportHTML, exportPDF, exportImage, cloudSave } from '@/utils/export'
 import { useShortcuts } from '@/composables/useShortcuts'
 import { setupGlobalErrorHandler, devLog, isElectron } from '@/utils/devMode'
 import { setupTauriCompat, tauriAPI } from '@/utils/tauriAPI'
@@ -297,6 +297,17 @@ async function handleExport(type: string) {
       case 'md':
         ok = await exportMarkdown(current.content, filename)
         break
+      case 'cloud': {
+        const r = await cloudSave(current.content, filename)
+        if (r.ok) {
+          ElMessage.success({ message: `已保存到服务器：${r.path}`, duration: 2500 })
+          devLog.info(`云端保存成功: ${r.path}`)
+        } else {
+          ElMessage.error(`云端保存失败: ${r.error || '未知错误'}`)
+          devLog.error(`云端保存失败: ${r.error}`)
+        }
+        return
+      }
       case 'html':
         ok = await exportHTML(editorElement?.innerHTML || '', filename, docStore.currentTheme)
         break

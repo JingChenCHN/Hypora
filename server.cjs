@@ -100,8 +100,47 @@ function serveStatic(req, res) {
   if (!file.startsWith(ROOT)) { res.writeHead(403); return res.end('Forbidden') }
   fs.readFile(file, (err, buf) => {
     if (err) { res.writeHead(404); return res.end('Not Found') }
-    res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream' })
     res.end(buf)
+  })
+}
+
+// ===== 云存储：把当前 Markdown 保存到本服务器 =====
+// 存储目录为 WEB 根目录的兄弟目录 `${根名}-cloud`（不在 nginx 静态根内，避免被当作站点资源
+// 直接对公网可读）。用户「云端保存」的文件落在这里，服务端做文件名安全校验。
+const CLOUD_ROOT = path.resolve(path.dirname(ROOT), path.basename(ROOT) + '-cloud')
+
+function jsonErr(res, code, msg) {
+  res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' })
+  res.end(JSON.stringify({ error: msg }))
+}
+
+// POST /api/cloud/save  body: { filename, content }
+function applyCloudSave(req, res) {
+  if (req.method !== 'POST') return jsonErr(res, 405, 'Method Not Allowed')
+  const chunks = []
+  let size = 0
+  const MAX = 128 * 1024 * 1024
+  req.on('data', (c) => { size += c.length; if (size > MAX) req.destroy(); else chunks.push(c) })
+  req.on('error', () => { if (!res.headersSent) jsonErr(res, 400, 'bad request body') })
+  req.on('end', () => {
+    let data
+    try { data = JSON.parse(Buffer.concat(chunks).toString('utf8')) } catch { return jsonErr(res, 400, 'invalid json') }
+    const content = data && typeof data.content === 'string' ? data.content : null
+    if (content == null) return jsonErr(res, 400, 'content required')
+    // 文件名安全：去路径分隔符与非法字符，统一 .md 后缀，避开路径穿越
+    let name = String(data.filename || 'document').split(/[\\/]/).pop() || 'document'
+    name = name.replace(/[<>:"\\|?*]/g, '-').replace(/[^\x20-\x7E一-龥-]/g, '').replace(/[\s.]+$/g, '').trim() || 'document'
+    if (!/\.md$/i.test(name)) name += '.md'
+    const target = path.join(CLOUD_ROOT, name)
+    if (!target.startsWith(CLOUD_ROOT)) return jsonErr(res, 403, 'bad filename')
+    fs.mkdir(CLOUD_ROOT, { recursive: true }, (err) => {
+      if (err) return jsonErr(res, 500, 'mkdir failed: ' + err.message)
+      fs.writeFile(target, content, 'utf8', (err) => {
+        if (err) return jsonErr(res, 500, 'write failed: ' + err.message)
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify({ ok: true, path: name }))
+      })
+    })
   })
 }
 
@@ -109,6 +148,9 @@ http.createServer((req, res) => {
   const urlPath = req.url.split('?')[0]
   if (urlPath === '/api/ai' || urlPath.startsWith('/api/ai/')) {
     return applyProxy(req, res)
+  }
+  if (urlPath === '/api/cloud/save') {
+    return applyCloudSave(req, res)
   }
   return serveStatic(req, res)
 }).listen(PORT, () => console.log('Hypora Web 已启动(静态+AI代理): http://localhost:' + PORT))

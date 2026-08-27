@@ -33,6 +33,22 @@ export async function exportMarkdown(content: string, filename: string = 'docume
   return await saveFile(`${filename}.md`, content, 'text/markdown;charset=utf-8')
 }
 
+// 云端保存：把当前 Markdown 保存到本服务器（同源 /api/cloud/save，server.cjs 落盘到 -cloud 目录）
+export async function cloudSave(content: string, filename: string = 'document'): Promise<{ ok: boolean; path?: string; error?: string }> {
+  try {
+    const res = await fetch('/api/cloud/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filename: `${filename}.md`, content }),
+    })
+    const j = await res.json().catch(() => ({}))
+    if (!res.ok) return { ok: false, error: j?.error || `HTTP ${res.status}` }
+    return { ok: true, path: j.path || `${filename}.md` }
+  } catch (e: any) {
+    return { ok: false, error: e?.message || String(e) }
+  }
+}
+
 // 导出HTML文件（返回完整 HTML 字符串）
 export function buildHTML(content: string, title: string = 'Document', theme: string = 'light'): string {
   return `<!DOCTYPE html>

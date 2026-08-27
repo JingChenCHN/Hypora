@@ -14,6 +14,7 @@
             <el-dropdown-item command="new"><el-icon><DocumentAdd /></el-icon> 新建文档</el-dropdown-item>
             <el-dropdown-item command="open"><el-icon><FolderOpened /></el-icon> 打开本地文件</el-dropdown-item>
             <el-dropdown-item command="save" divided><el-icon><Download /></el-icon> 保存为MD</el-dropdown-item>
+            <el-dropdown-item command="cloudSave"><el-icon><Cloudy /></el-icon> 云端保存到服务器</el-dropdown-item>
             <el-dropdown-item command="exportHtml"><el-icon><DocumentCopy /></el-icon> 导出HTML</el-dropdown-item>
             <el-dropdown-item command="exportPdf"><el-icon><Files /></el-icon> 导出PDF</el-dropdown-item>
             <el-dropdown-item command="exportImage"><el-icon><Picture /></el-icon> 导出图片</el-dropdown-item>
@@ -226,7 +227,7 @@ import { useAIStore } from '@/stores/ai'
 import {
   Document, ArrowDown, DocumentAdd, FolderOpened, Download, DocumentCopy, Files, Picture, PictureFilled,
   Postcard, MagicStick, Grid, ChatDotSquare, List, Select, Link, Minus, Top,
-  Search, Sunny, Moon, Coffee, Brush, Pouring, Menu, FullScreen, EditPen
+  Search, Sunny, Moon, Coffee, Brush, Pouring, Menu, FullScreen, EditPen, Cloudy
 } from '@element-plus/icons-vue'
 import { readMdFile } from '@/utils/export'
 import TrafficLights from './TrafficLights.vue'
@@ -292,6 +293,9 @@ function handleFileCommand(command: string) {
       break
     case 'save':
       emit('export', 'md')
+      break
+    case 'cloudSave':
+      emit('export', 'cloud')
       break
     case 'exportHtml':
       emit('export', 'html')
