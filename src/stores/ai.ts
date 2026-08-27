@@ -37,6 +37,9 @@ export const useAIStore = defineStore('ai', () => {
   const glmModel = ref(DEFAULT_GLM_MODEL)
   const panelVisible = ref(false)
   const messages = ref<ChatMessage[]>([])
+  // 每条消息的思考链（reasoning_content）单独存放，与 .content 分离，避免污染正文。
+  // 长度与 messages 对齐；助手消息的思考链只在面板折叠展示，不随「插入/复制」进编辑器。
+  const reasonings = ref<string[]>([])
   const loading = ref(false)
   // 待发送的图片（base64 data URL），仅 GLM 识图模式使用，发送后清空
   const pendingImages = ref<string[]>([])
@@ -116,6 +119,7 @@ export const useAIStore = defineStore('ai', () => {
   function clearMessages() {
     if (loading.value) return
     messages.value = []
+    reasonings.value = []
     clearImages()
   }
 
@@ -140,10 +144,12 @@ export const useAIStore = defineStore('ai', () => {
     if (isGlm) {
       if (!glmKey.value.trim()) {
         messages.value.push({ role: 'assistant', content: '⚠️ 请先在配置区填写 GLM API Key。' })
+        reasonings.value.push('')
         return
       }
     } else if (!isLocal && !apiKey.value.trim()) {
       messages.value.push({ role: 'assistant', content: '⚠️ 请先在配置区填写 API Key。' })
+      reasonings.value.push('')
       return
     }
 
@@ -164,7 +170,9 @@ export const useAIStore = defineStore('ai', () => {
     }
 
     messages.value.push({ role: 'user', content: userContent })
+    reasonings.value.push('')
     messages.value.push({ role: 'assistant', content: '' })
+    reasonings.value.push('')
     const aiIdx = messages.value.length - 1
 
     loading.value = true
@@ -186,7 +194,8 @@ export const useAIStore = defineStore('ai', () => {
         path: isGlm ? '/chat/completions' : undefined,
         thinking: !isLocal && !isGlm && thinking.value,
         onChunk: (delta) => { messages.value[aiIdx].content += delta },
-        onReasoning: (delta) => { messages.value[aiIdx].content += delta },
+        // 思考链单独收集，不混入正文（避免嵌入编辑器时带一堆冗余思考）
+        onReasoning: (delta) => { reasonings.value[aiIdx] += delta },
         signal: controller.signal
       })
       if (!messages.value[aiIdx].content) {
@@ -208,7 +217,7 @@ export const useAIStore = defineStore('ai', () => {
   }
 
   return {
-    apiKey, model, thinking, provider, baseUrl, localModel, glmKey, glmModel, panelVisible, messages, loading, pendingImages,
+    apiKey, model, thinking, provider, baseUrl, localModel, glmKey, glmModel, panelVisible, messages, reasonings, loading, pendingImages,
     init, saveToLocal, setProvider, testConnection, togglePanel, clearMessages, stop, send, addImage, removeImage, clearImages
   }
 })

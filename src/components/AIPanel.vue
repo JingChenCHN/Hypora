@@ -59,16 +59,22 @@
         <template v-else-if="aiStore.provider === 'glm'">
           <div class="config-row">
             <label>API Key</label>
-            <el-input v-model="aiStore.glmKey" type="password" show-password size="small" placeholder="智谱 API Key" @change="aiStore.saveToLocal()" />
+            <el-input v-model="aiStore.glmKey" type="password" show-password size="small" placeholder="填入你的智谱 API Key（sk-…）" @change="aiStore.saveToLocal()" />
           </div>
           <div class="config-row">
             <label>模型</label>
             <el-select v-model="aiStore.glmModel" size="small" filterable allow-create @change="aiStore.saveToLocal()" style="flex:1">
+              <el-option label="glm-4-flash (免费文本)" value="glm-4-flash" />
               <el-option label="glm-4v-flash (免费识图)" value="glm-4v-flash" />
               <el-option label="glm-4v (更强识图)" value="glm-4v" />
             </el-select>
           </div>
-          <p class="config-hint-row">GLM 识图模式：在下方输入区点击「图片」按钮上传图片（最多 5 张），输入问题后发送，AI 将详细提取图片内容。默认 Key 已预置，可直接使用。</p>
+          <div class="config-row">
+            <label>连接</label>
+            <el-button size="small" class="test-btn" @click="testGlm">测试</el-button>
+            <span class="conn-status" :class="{ ok: glmConnOk }">{{ glmConnStatus }}</span>
+          </div>
+          <p class="config-hint-row">GLM 识图模式：在下方输入区点击「图片」按钮上传图片（最多 5 张）后发送，AI 将详细提取图片内容。文本对话选 glm-4-flash。在本页填写你的智谱 API Key，Key 仅存于本地浏览器，经同源代理转发、不落服务器。</p>
         </template>
 
         <template v-else>
@@ -110,6 +116,14 @@
               <template v-else>{{ msg.content }}</template>
             </div>
             <div v-else class="msg-text markdown-body">
+              <!-- 思考链：与正文分离，折叠展示（不随「插入/复制」进编辑器） -->
+              <div v-if="aiStore.reasonings[i]" class="reasoning-block">
+                <button class="reasoning-toggle" @click.stop="toggleReasoning(i)">
+                  <span class="reasoning-arrow" :class="{ open: reasoningOpen[i] }">▸</span>
+                  {{ reasoningOpen[i] ? '收起思考过程' : '思考过程' }}
+                </button>
+                <div v-if="reasoningOpen[i]" class="reasoning-body" v-html="renderMd(aiStore.reasonings[i], i)"></div>
+              </div>
               <div v-if="msg.content" class="ai-md-content" v-html="renderMd(msg.content, i)"></div>
               <!-- 思考中：三点 lottie -->
               <LottieLoading v-else-if="i === lastIdx && aiStore.loading" :animation="aiLoadingAnimation" size="small" label="AI 正在思考…" />
@@ -123,8 +137,17 @@
         </div>
       </div>
 
+      <!-- 当前引用选中文字（跟随编辑区选区实时更新；鼠标点进来也不丢） -->
+      <div v-if="referencedText" class="ai-refbar">
+        <span class="ref-dot"></span>
+        <span class="ref-label">将引用选中文字</span>
+        <span class="ref-body">{{ referencedText }}</span>
+        <span class="ref-count">{{ referencedLen }} 字</span>
+      </div>
+
       <!-- 选区/文档快捷操作 -->
-      <div class="ai-presets">
+      <!-- @mousedown.prevent：点击预设按钮不夺走编辑区焦点，避免浏览器清空选区、高亮丢失 -->
+      <div class="ai-presets" @mousedown.prevent>
         <button class="preset-btn" :disabled="aiStore.loading" @click="preset('rewrite')">改写</button>
         <button class="preset-btn" :disabled="aiStore.loading" @click="preset('explain')">解释</button>
         <button class="preset-btn" :disabled="aiStore.loading" @click="preset('translate')">翻译</button>
@@ -166,11 +189,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, nextTick } from 'vue'
+import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue'
 import { Setting, Delete, Close, Picture } from '@element-plus/icons-vue'
 import { useAIStore, AI_PRESETS } from '@/stores/ai'
 import { useDocumentStore } from '@/stores/document'
 import { mdToHtml } from '@/utils/markdown'
+import { testChatCompletion } from '@/utils/deepseek'
 import { ElMessage } from 'element-plus'
 import LottieLoading from './LottieLoading.vue'
 import assistantAnim from '@/assets/ai-assistant-bubble.json'
@@ -178,6 +202,45 @@ import { aiLoadingAnimation } from '@/assets/aiLoading'
 
 const props = defineProps<{ visible: boolean; editor: any }>()
 const aiStore = useAIStore()
+
+// 跟随编辑区选区实时刷新的「引用」内容：editor.getSelectedText 已兼容失焦后回退 remember
+function readSelected() {
+  const s = (props.editor?.getSelectedText?.() || '').trim()
+  refText.value = s
+  refLen.value = s.length
+}
+// 引用栏内容：编辑器内选中文字（实时）
+const refText = ref('')
+const refLen = ref(0)
+const referencedText = computed(() => refText.value)
+const referencedLen = computed(() => refLen.value)
+
+let rafId: number | null = null
+function scheduleReadSelected() {
+  // requestAnimationFrame 合帧，避免 selectionchange 高频触发反复刷新
+  if (rafId != null) return
+  rafId = requestAnimationFrame(() => { rafId = null; readSelected() })
+}
+
+// 面板可见期间跟踪编辑区/面板的选区变化，刷新引用栏
+let cleanupSelectionWatch: (() => void) | null = null
+watch(() => props.visible, (v) => {
+  cleanupSelectionWatch?.()
+  cleanupSelectionWatch = null
+  if (!v) return
+  const onSel = () => scheduleReadSelected()
+  readSelected()
+  document.addEventListener('selectionchange', onSel)
+  window.addEventListener('mouseup', onSel)
+  const el = props.editor?.getEditorElement?.()
+  if (el) el.addEventListener('mouseup', onSel)
+  cleanupSelectionWatch = () => {
+    document.removeEventListener('selectionchange', onSel)
+    window.removeEventListener('mouseup', onSel)
+    el?.removeEventListener('mouseup', onSel)
+  }
+}, { immediate: true })
+onBeforeUnmount(() => { cleanupSelectionWatch?.() })
 const docStore = useDocumentStore()
 const input = ref('')
 const configVisible = ref(false)
@@ -185,8 +248,16 @@ const messagesRef = ref<HTMLElement>()
 const imgInputRef = ref<HTMLInputElement>()
 const connStatus = ref('')
 const connOk = ref(false)
+const glmConnStatus = ref('')
+const glmConnOk = ref(false)
 
 const lastIdx = computed(() => aiStore.messages.length - 1)
+
+// 每条助手消息思考链的展开状态（默认折叠，避免冗余思考抢占阅读焦点）
+const reasoningOpen = ref<Record<number, boolean>>({})
+function toggleReasoning(i: number) {
+  reasoningOpen.value = { ...reasoningOpen.value, [i]: !reasoningOpen.value[i] }
+}
 
 async function testLocal() {
   connStatus.value = '测试中…'
@@ -194,6 +265,19 @@ async function testLocal() {
   const r = await aiStore.testConnection()
   connOk.value = r.ok
   connStatus.value = r.ok ? (r.info ? `已连接：${r.info}` : '已连接') : (r.error || '未连接')
+}
+
+async function testGlm() {
+  if (!aiStore.glmKey.trim()) {
+    glmConnStatus.value = '请先填写 GLM API Key'
+    glmConnOk.value = false
+    return
+  }
+  glmConnStatus.value = '测试中…'
+  glmConnOk.value = false
+  const r = await testChatCompletion(aiStore.baseUrl, aiStore.glmKey.trim(), aiStore.glmModel)
+  glmConnOk.value = r.ok
+  glmConnStatus.value = r.ok ? (r.info || '已连接') : (r.error || '未连接')
 }
 
 function renderMd(md: string | any[], _i: number): string {
@@ -513,13 +597,52 @@ async function copyText(text: string) {
     font-family: "JetBrains Mono", Consolas, monospace;
     font-size: 12.5px;
   }
-  :deep(a) { color: var(--accent-color); }
   :deep(blockquote) {
     border-left: 3px solid var(--blockquote-border);
     padding-left: 10px;
     color: var(--text-muted);
     margin: 6px 0;
   }
+}
+
+/* —— 思考链（reasoning_content）：与正文分离，折叠展示，克制的次级信息 —— */
+.reasoning-block {
+  margin: 0 0 8px;
+  padding: 6px 10px;
+  border-left: 1px solid var(--border-color);
+  background: var(--bg-tertiary);
+  border-radius: 2px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.reasoning-toggle {
+  font-size: 12px;
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-family: inherit;
+  letter-spacing: 0.05em;
+  &:hover { color: var(--text-secondary); }
+}
+.reasoning-arrow {
+  display: inline-block;
+  font-size: 10px;
+  transition: transform 0.2s ease;
+  &.open { transform: rotate(90deg); }
+}
+.reasoning-body {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border-color);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  color: var(--text-tertiary);
+  :deep(p) { margin: 4px 0; }
 }
 
 /* —— 气泡内动作 —— */
@@ -548,6 +671,47 @@ async function copyText(text: string) {
 }
 
 /* —— 预设：胶囊按钮 —— */
+/* —— 当前引用选中文字（选段实时提示） —— */
+.ai-refbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 16px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 2px;
+  background: var(--bg-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+  min-height: 30px;
+  box-sizing: border-box;
+  max-height: 64px;
+  overflow: hidden;
+}
+.ref-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-primary);
+}
+.ref-label {
+  flex-shrink: 0;
+  color: var(--text-secondary);
+}
+.ref-body {
+  flex: 1;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+.ref-count {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+}
+
 .ai-presets {
   display: flex;
   flex-wrap: wrap;

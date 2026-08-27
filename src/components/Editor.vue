@@ -57,7 +57,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, onMounted } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { useDocumentStore } from '@/stores/document'
 import { mdToHtml, renderMermaid, extractOutline, handleImagePaste, insertMarkdown, htmlToMd, highlightCodeElement } from '@/utils/markdown'
 import type { OutlineItem } from '@/utils/markdown'
@@ -84,6 +84,11 @@ let syncTimer: number | null = null
 let isComposing = false
 // 标记：当前内容变化是否由用户输入触发（避免输入时 v-html 重渲染导致光标跳动）
 let syncingFromInput = false
+
+// 最近一次非空选区（AI 助手引用用）：鼠标从编辑区移开/点进 AI 面板时浏览器会清空 window.getSelection()，
+// 这里持续记忆最后一次所处的「文本 + Range」，保证 AI 预设按钮任何时候都能拿到用户刚选中那段。
+let lastSelectionText = ''
+let lastSelectionRange: Range | null = null
 // 自定义 undo/redo 历史栈（浏览器 contenteditable undo 栈被 v-html 重渲染破坏，不可靠）
 const history = ref<string[]>([])
 const historyIndex = ref(-1)
@@ -543,6 +548,29 @@ function applyAutoFormat(e: Event) {
   const selection = window.getSelection()
   if (!selection || selection.rangeCount === 0) return
 
+  // 行内链接即时渲染（对标 Typora）：光标刚敲完 ')' 时，把块内延伸到末尾的完整 Markdown 链接
+  // [text](url) / [text](url "title") 重建为 <a href title>。
+  // 必须基于"整个块（P）"检测而非光标所在 text node：
+  // 中文输入法上屏后光标常落在块元素节点（nodeType=1），且 "[ 你好 ]" 会分裂在不同 text node，
+  // 逐节点检测永远匹配不到完整链接，文本被 htmlToMd(turndown) 转义成 \[...\] 存进 store，
+  // 无论 title 与否都无法渲染成链接。
+  if (tryRenderInlineLink(selection)) {
+    e.preventDefault()
+    return
+  }
+
+  // 行内强调（粗体/斜体/高亮/行内代码/删除线）：敲完闭合标记即渲染（Typora 体验），无需再敲空格
+  if (tryRenderInlineMark(selection)) {
+    e.preventDefault()
+    return
+  }
+
+  // GFM 表格：输入「表头行 + 分割行」后即转真实表格（所见即所得即时渲染）
+  if (tryRenderTable(selection)) {
+    e.preventDefault()
+    return
+  }
+
   const range = selection.getRangeAt(0)
   const node = range.startContainer
   if (node.nodeType !== Node.TEXT_NODE) return
@@ -738,7 +766,7 @@ function applyAutoFormat(e: Event) {
     const block = getCurrentBlock(selection)
     if (block) block.replaceWith(ul)
     else if (editorRef.value) editorRef.value.appendChild(ul)
-    // 光标精确定位到 input 之后，使输入文字出现在复选框后
+    // 光标精确定位到 input 之后，使其文本出现在复选框后
     const r = document.createRange()
     r.setStartAfter(input)
     r.collapse(true)
@@ -747,6 +775,187 @@ function applyAutoFormat(e: Event) {
     e.preventDefault()
     return
   }
+}
+
+// 行内链接即时渲染：在光标所在块（P）的完整文本中，若结尾是一个完整 Markdown 链接
+// [text](url) 或 [text](url "title")，则重建为真正的 <a href title> 元素。
+// 返回 true 表示已处理（调用方应 return）。
+// 基于块文本而非单个 text node，兼容中文输入法（光标在块元素、"[ 你好 ]" 分裂于多个 text node）。
+function tryRenderInlineLink(selection: Selection): boolean {
+  const block = getCurrentBlock(selection)
+  if (!block) return false
+
+  // 完整块文本（合并所有 text node）
+  const fullText = block.textContent || ''
+  // 匹配结尾的完整链接 [text](url) 或 [text](url "title")；url 不含空格/右括号，title 可选
+  const linkMatch = fullText.match(/(\[[^\]]+\]\([^)\s]+(?:\s+"[^"]*")?\))$/)
+  if (!linkMatch) return false
+  const linkStr = linkMatch[1]
+  const linkStart = fullText.lastIndexOf(linkStr)
+  if (linkStart < 0) return false
+
+  // 解析链接组成部分
+  const inner = linkStr.match(/^\[([^\]]+)\]\(([^)\s]+)(?:\s+"([^"]*)")?\)$/)
+  if (!inner) return false
+  const [, label, href, title] = inner
+
+  // 只允许链接之前是纯文本（不破坏已存在的 <a>/<strong> 等富文本结构）
+  let acc = 0
+  for (const child of Array.from(block.childNodes)) {
+    if (acc >= linkStart) break
+    if (child.nodeType !== Node.TEXT_NODE) return false
+    acc += (child.textContent || '').length
+  }
+
+  // 重建块：前置文本 + <a>（title 无损保留，turndown 回写可还原）
+  const beforeText = fullText.slice(0, linkStart)
+  block.textContent = ''
+  const a = document.createElement('a')
+  a.href = href
+  a.textContent = label
+  if (title) a.setAttribute('title', title)
+  if (beforeText) block.appendChild(document.createTextNode(beforeText))
+  block.appendChild(a)
+  // 光标定位到 <a> 之后的新文本节点，便于继续输入
+  const after = document.createTextNode('')
+  block.appendChild(after)
+  const cr = document.createRange()
+  cr.setStart(after, 0)
+  cr.collapse(true)
+  selection.removeAllRanges()
+  selection.addRange(cr)
+  return true
+}
+
+// 行内强调即时渲染（Typora 体验）：敲完闭合标记即刻转真元素，无需再敲空格。
+// 复用 tryRenderInlineLink 的「块文本 + DOM 重建 + 光标归位」模式，兼容中文 IME。
+// 支持：**粗体**, *斜体*, ==高亮==, `行内代码`, ~~删除线~~。
+// 返回 true 表示已处理（调用方应 e.preventDefault 并 return）。
+// 避免误伤（如 a*b 数学式、英文单词内 *x*），限定开启标记前一个字符非拉丁字母/数字/下划线
+//（CJK 前可正常渲染，如「重要**重点**」）。
+function tryRenderInlineMark(selection: Selection): boolean {
+  const block = getCurrentBlock(selection)
+  if (!block) return false
+  const fullText = block.textContent || ''
+  if (!fullText) return false
+
+  // 支持的行内强调：limit 序（先长标记后短标记，避免 ** 被 * 抢先）
+  type MarkRule = { tag: string; open: string; className?: string }
+  const rules: MarkRule[] = [
+    { tag: 'strong', open: '**' },
+    { tag: 'mark', open: '==' },
+    { tag: 'del', open: '~~' },
+    { tag: 'code', open: '`', className: 'inline-code' },
+    { tag: 'em', open: '*' }
+  ]
+
+  for (const rule of rules) {
+    const open = rule.open
+    // 转为正则：开启标记前必须是行首或非 [a-zA-Z0-9_] 字符（避免单词内误触），内容至少 1 字符，
+    // 且内容中不再含开启标记；结尾以开启标记闭合。
+    const esc = open.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const re = new RegExp(`(^|[^a-zA-Z0-9_])(${esc})(.+?)(?:${esc})$`, 's')
+    const m = fullText.match(re)
+    if (!m || !m[3]) continue
+    const content = m[3]
+    // 内容里不能含开启标记（含单字符 `*`），否则 `**a**` 的 em 规则会把整体当 *a** 捕获；保证同型闭合且不嵌套
+    if (content.includes(open)) continue
+    // 开启标记在整个块中的起始下标：m[0] 起点 + 前导非单词字符（m[1]）长度
+    // （match 的 index 指向整段匹配起点，其前是 m[1] 前导字符，其余即开启标记本身）
+    const openStart = m.index! + m[1].length
+    // 只允许块内该标记之前是纯文本（与 tryRenderInlineLink 一致，不破坏已有 <strong> 等富文本）
+    let acc = 0
+    for (const child of Array.from(block.childNodes)) {
+      if (acc >= openStart) break
+      if (child.nodeType !== Node.TEXT_NODE) return false
+      acc += (child.textContent || '').length
+    }
+
+    // 重建块：前置文本 + 目标元素
+    const beforeText = fullText.slice(0, openStart)
+    block.textContent = ''
+    const el = document.createElement(rule.tag)
+    if (rule.className) el.className = rule.className
+    el.textContent = content
+    if (beforeText) block.appendChild(document.createTextNode(beforeText))
+    block.appendChild(el)
+    // 光标定位到元素之后的新文本节点，便于继续输入
+    const after = document.createTextNode('')
+    block.appendChild(after)
+    const cr = document.createRange()
+    cr.setStart(after, 0)
+    cr.collapse(true)
+    selection.removeAllRanges()
+    selection.addRange(cr)
+    return true
+  }
+  return false
+}
+
+// GFM 表格即时渲染：在所见即所得区输入表格语法（表头行 + `| --- | --- |` 分割行）后，
+// 把当前块与前面连续的表格相关块聚合，经 mdToHtml 渲染为真实 <table>（包 .table-wrapper）。
+// 复用现有 mdToHtml（marked gfm）保证与源码渲染一致。
+// 返回 true 表示已处理。
+function tryRenderTable(selection: Selection): boolean {
+  const block = getCurrentBlock(selection)
+  if (!block) return false
+  // 当前块需看起来是表格行（含 |）才继续
+  const curText = (block.textContent || '').trim()
+  if (!curText.includes('|')) return false
+
+  // 从当前块向前聚合连续相邻、且作为表格行文本的兄弟块（期间遇到非表格行则停止）
+  const rows: HTMLElement[] = []
+  let node: HTMLElement | null = block
+  const isTableCellRow = (t: string) => /^\s*\|.*\|\s*$/.test(t)
+  while (node && node !== editorRef.value) {
+    const tag = node.tagName
+    const siblingsOk = ['P', 'LI'].includes(tag)
+    const t = (node.textContent || '').replace(/\n/g, '')
+    if (!siblingsOk || !isTableCellRow(t.trim())) break
+    rows.unshift(node)
+    node = node.previousElementSibling as HTMLElement | null
+  }
+  if (rows.length < 2) return false
+
+  // 只把「形如表格行」的块抽取到 markdown 里（去掉前后空行），交给 mdToHtml 渲染表格
+  const mdLines = rows.map(r => (r.textContent || '').replace(/\n/g, '').trim())
+  // 表头 + 分割 至少两行才开始渲染
+  const header = mdLines[0]
+  const sep = mdLines[1]
+  if (!/^\|.*\|\s*$/.test(header)) return false
+  if (!/^\|?[:\s-]{3,}\|[^|]*\|?$/.test(sep)) return false
+  const mdTable = mdLines.join('\n')
+  const wrapperH = renderToTableWrapper(mdTable)
+  if (!wrapperH) return false
+
+  // 用 wrapper 替换这些连续块中的第一个（其余块删掉），并在其后补一个空 P
+  const first = rows[0]
+  for (const r of rows.slice(1)) r.remove()
+  first.replaceWith(wrapperH)
+  const afterP = document.createElement('p')
+  afterP.innerHTML = '<br>'
+  wrapperH.after(afterP)
+  const r2 = document.createRange()
+  r2.setStart(afterP, 0)
+  r2.collapse(true)
+  selection.removeAllRanges()
+  selection.addRange(r2)
+  return true
+}
+
+// 把一段 GFM 表格 markdown 渲染为 <div class="table-wrapper"><table>…，contenteditable=false>（保护表格不被误改）
+function renderToTableWrapper(md: string): HTMLElement | null {
+  const html = mdToHtml(md)
+  const holder = document.createElement('div')
+  holder.innerHTML = html
+  const table = holder.querySelector('table')
+  if (!table) return null
+  const wrap = document.createElement('div')
+  wrap.className = 'table-wrapper'
+  wrap.contentEditable = 'false'
+  // 复制 <table> 带其内容（thead/tbody）
+  wrap.appendChild(table)
+  return wrap
 }
 
 // 处理粘贴
@@ -769,7 +978,39 @@ async function handlePaste(e: ClipboardEvent) {
 
   // 粘贴纯文本
   const text = e.clipboardData?.getData('text/plain') || ''
+  // 若粘贴内容是 GFM 表格（含 `| --- | --- |` 分割行），直接渲染为真表格，避免停留文本
+  const tableWrap = looksLikeTable(text) ? renderToTableWrapper(trimTable(text)) : null
+  if (tableWrap) {
+    // 以块级元素插入表格，光标定位到其后新段落
+    const sel = window.getSelection()
+    insertBlockElement(tableWrap, sel, true)
+    return
+  }
+  // 粘贴 Markdown 里的 mermaid/gantt 代码围栏：转成 HTML 后手动渲染图表（否则停留源码态）
+  if (looksLikeMermaid(text)) {
+    document.execCommand('insertHTML', false, mdToHtml(text))
+    renderMermaid(editorRef.value)
+    return
+  }
   document.execCommand('insertText', false, text)
+}
+
+// 粗略判断一段文本是否包含 mermaid（gantt/flowchart 等）代码围栏，粘贴时需转 HTML 渲染
+function looksLikeMermaid(text: string): boolean {
+  return /```\s*mermaid/i.test(text)
+}
+
+// 粗略判断一段文本是否为 GFM 表格（含 | 且存在 |---| 分割行）
+function looksLikeTable(text: string): boolean {
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean)
+  if (lines.length < 2) return false
+  const hasSep = lines.some(l => /^\|?[:\s-]{3,}\|/.test(l) && l.includes('---'))
+  return hasSep && lines.every(l => /^\|.*\|$|[:\-\s|]+/.test(l.replace(/^\s+|\s+$/g, '')))
+}
+
+// 截取仅为表格部分的多行文本（去除可能的空行）
+function trimTable(text: string): string {
+  return text.split('\n').map(l => l.replace(/^\s+|\s+$/g, '')).filter(Boolean).join('\n')
 }
 
 // 处理拖拽
@@ -1666,7 +1907,29 @@ function normalizeCodeBlocks() {
 
 // 获取当前选中文本（供 AI 助手“对选中文字操作”使用）
 function getSelectedText(): string {
-  return window.getSelection()?.toString() || ''
+  // 优先实时选区；编辑区可能刚失焦（浏览器已清空选区），回退到记住的上次选区
+  return window.getSelection()?.toString() || lastSelectionText
+}
+
+// 获取最近一次有效选区（AI 引用栏展示 / 选区操作）：实时优先，失焦后回退记住的 Range
+function getSelectedRange(): Range | null {
+  const sel = window.getSelection()
+  const live = sel && sel.rangeCount > 0 && !sel.isCollapsed ? sel.getRangeAt(0) : null
+  return live || lastSelectionRange
+}
+
+// 监听编辑器内的选区变化，持续刷新 lastSelection（供 AI 引用栏实时显示 & 失焦后兜底）
+function trackSelection() {
+  const sel = window.getSelection()
+  if (!sel || sel.rangeCount === 0) return
+  const range = sel.getRangeAt(0)
+  // 只记录发生在编辑区内的选区，且非空
+  if (!editorRef.value?.contains(range.commonAncestorContainer)) return
+  if (sel.isCollapsed) return
+  const txt = sel.toString().trim()
+  if (!txt) return
+  lastSelectionText = txt
+  lastSelectionRange = range.cloneRange()
 }
 
 // 在光标处插入 AI 回复（所见即所得渲染成 HTML 插入，源码模式插入纯文本到 textarea）
@@ -1691,9 +1954,12 @@ function insertTextAtCursor(text: string) {
   // AI 回复是 markdown，渲染成 HTML 插入更贴近所见即所得
   document.execCommand('insertHTML', false, mdToHtml(text))
   debouncedSyncToStore()
+  // AI 回复可能含 mermaid/gantt 代码块：insertHTML 不会自动触发图表渲染，需手动渲染。
+  // 否则 .mermaid 元素停留在源码态（用户看不到图表）。已渲染过的块 data-processed 会跳过。
+  renderMermaid(editorRef.value)
 }
 
-// 替换当前选区为 AI 回复
+// 替换当前选区为 AI 回复，并在替换后渲染可能插入的 mermaid 图表
 function replaceSelection(text: string) {
   if (docStore.isSourceMode) {
     const ta = textareaRef.value
@@ -1710,10 +1976,19 @@ function replaceSelection(text: string) {
     return
   }
   flushSync()
+  // 用记住的选区重建 Range：失焦后浏览器已清空 selection，但 lastSelectionRange 保留着用户刚选的片段
+  const range = getSelectedRange()
+  if (!range) return
+  if (!editorRef.value?.contains(range.commonAncestorContainer)) return
+  editorRef.value.focus()
   const sel = window.getSelection()
-  if (!sel || sel.rangeCount === 0 || !editorRef.value?.contains(sel.anchorNode)) return
+  if (!sel) return
+  sel.removeAllRanges()
+  sel.addRange(range)
   document.execCommand('insertHTML', false, mdToHtml(text))
   debouncedSyncToStore()
+  // 替换内容可能含 mermaid/gantt 代码块：insertHTML 不会自动渲染图表，需手动触发
+  renderMermaid(editorRef.value)
 }
 
 defineExpose({
@@ -1725,6 +2000,7 @@ defineExpose({
   undo,
   redo,
   getSelectedText,
+  getSelectedRange,
   insertTextAtCursor,
   replaceSelection
 })
@@ -1732,6 +2008,11 @@ defineExpose({
 onMounted(() => {
   // 初始化主题
   document.documentElement.setAttribute('data-theme', docStore.currentTheme)
+
+  // 持续记录编辑区内用户选中的文字（供 AI 助手引用：鼠标移到面板后选区会被浏览器清空，
+  // 但 lastSelection 仍保留，AI 引用栏与预设操作都能拿到）
+  document.addEventListener('selectionchange', trackSelection)
+  editorRef.value?.addEventListener('mouseup', trackSelection)
 
   // 监听中文输入
   if (editorRef.value) {
@@ -1744,6 +2025,11 @@ onMounted(() => {
       debouncedSyncToStore()
     })
   }
+})
+
+onUnmounted(() => {
+  document.removeEventListener('selectionchange', trackSelection)
+  editorRef.value?.removeEventListener('mouseup', trackSelection)
 })
 </script>
 
