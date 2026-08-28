@@ -362,8 +362,33 @@ function replaceSel(text: string) {
   props.editor?.replaceSelection?.(text)
   ElMessage.success('已替换选区')
 }
-async function copyText(text: string) {
-  try { await navigator.clipboard.writeText(text); ElMessage.success('已复制') } catch { ElMessage.error('复制失败') }
+// 复制文本：优先 navigator.clipboard（需 HTTPS/localhost 安全上下文）；
+// 本机生产站点走 HTTP，navigator.clipboard 不存在，回退到临时 textarea + execCommand 方案（HTTP 下可用）
+function copyText(text: string) {
+  const fallbackCopy = () => {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    ta.style.pointerEvents = 'none'
+    document.body.appendChild(ta)
+    ta.focus()
+    ta.select()
+    try {
+      const ok = document.execCommand('copy')
+      document.body.removeChild(ta)
+      if (ok) ElMessage.success('已复制')
+      else ElMessage.error('复制失败')
+    } catch {
+      document.body.removeChild(ta)
+      ElMessage.error('复制失败')
+    }
+  }
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).then(() => ElMessage.success('已复制')).catch(fallbackCopy)
+  } else {
+    fallbackCopy()
+  }
 }
 </script>
 
