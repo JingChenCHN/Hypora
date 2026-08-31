@@ -12,24 +12,27 @@
         :active-heading="activeHeading"
       />
 
-      <div class="editor-wrapper" ref="editorWrapperRef">
-        <Editor
-          ref="editorRef"
-          @outline-update="handleOutlineUpdate"
-          @stats-update="handleStatsUpdate"
-          @context-action="handleContextAction"
-        />
+      <!-- 编辑列：文本区 + 底部功能区（功能区只随文本区，不横贯侧边栏，Typora 式） -->
+      <div class="editor-pane">
+        <div class="editor-wrapper" ref="editorWrapperRef">
+          <Editor
+            ref="editorRef"
+            @outline-update="handleOutlineUpdate"
+            @stats-update="handleStatsUpdate"
+            @context-action="handleContextAction"
+          />
 
-        <SearchPanel
-          :visible="searchVisible"
-          @close="searchVisible = false"
-          @replace="handleReplace"
-        />
+          <SearchPanel
+            :visible="searchVisible"
+            @close="searchVisible = false"
+            @replace="handleReplace"
+          />
+        </div>
+
+        <Statusbar :stats="stats" @toggle-dev="devVisible = true" />
       </div>
       <AIPanel v-if="aiPanelAlive" :visible="aiStore.panelVisible" :editor="editorRef" />
     </div>
-
-    <Statusbar :stats="stats" @toggle-dev="devVisible = true" />
 
     <DevPanel v-model:visible="devVisible" />
     <CloudFiles :visible="cloudVisible" @close="cloudVisible = false" />
@@ -361,6 +364,14 @@ function handleReplace() {
   flex: 1;
   display: flex;
   overflow: hidden;
+}
+
+// 编辑列：文本区 + 底部功能区（Typora 式，功能区不横贯侧边栏）
+.editor-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
 }
 
 .editor-wrapper {

@@ -200,12 +200,6 @@
         </el-button>
       </el-tooltip>
 
-      <el-tooltip content="源码模式 (Ctrl+/)" placement="bottom">
-        <el-button text class="toolbar-btn" :class="{ 'is-active': docStore.isSourceMode }" @click="docStore.toggleSourceMode()">
-          <el-icon><EditPen /></el-icon>
-        </el-button>
-      </el-tooltip>
-
       <el-tooltip content="全屏 (F11)" placement="bottom">
         <el-button text class="toolbar-btn" :class="{ 'is-active': docStore.isFullscreen }" @click="docStore.toggleFullscreen()">
           <el-icon><FullScreen /></el-icon>
@@ -228,7 +222,7 @@ import { useAIStore } from '@/stores/ai'
 import {
   Document, ArrowDown, DocumentAdd, FolderOpened, Download, DocumentCopy, Files, Picture, PictureFilled,
   Postcard, MagicStick, Grid, ChatDotSquare, List, Select, Link, Minus, Top,
-  Search, Sunny, Moon, Coffee, Brush, Pouring, Menu, FullScreen, EditPen, Cloudy
+  Search, Sunny, Moon, Coffee, Brush, Pouring, Menu, FullScreen, Cloudy
 } from '@element-plus/icons-vue'
 import { readMdFile } from '@/utils/export'
 import TrafficLights from './TrafficLights.vue'

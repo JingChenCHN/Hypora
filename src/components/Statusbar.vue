@@ -1,35 +1,41 @@
 <template>
   <div class="statusbar">
     <div class="statusbar-left">
-      <span class="status-item" v-if="!docStore.activeDocument?.isSaved">
-        <el-icon><WarningFilled /></el-icon> 未保存
+      <!-- 侧边栏折叠/展开（Typora 左下角 <） -->
+      <span
+        class="status-icon-btn"
+        :title="docStore.sidebarVisible ? '折叠侧边栏 (F9)' : '展开侧边栏 (F9)'"
+        @click="docStore.toggleSidebar()"
+      >
+        <el-icon><ArrowLeft v-if="docStore.sidebarVisible" /><ArrowRight v-else /></el-icon>
       </span>
-      <span class="status-item" v-else>
-        <el-icon><CircleCheckFilled /></el-icon> 已保存
-      </span>
-      <span class="status-divider"></span>
-      <span class="status-item">自动保存: {{ docStore.autoSave ? '开' : '关' }}</span>
-      <span class="status-divider"></span>
-      <span class="status-item dev-entry" @click="emit('toggleDev')" title="开发者模式 (F12)">
-        <el-icon><Tools /></el-icon> 开发者
+      <!-- 源码模式（Typora 左下角 </>，激活呈方框态即退出入口） -->
+      <span
+        class="status-icon-btn source-toggle"
+        :class="{ 'is-active': docStore.isSourceMode }"
+        :title="docStore.isSourceMode ? '退出源码模式 (Ctrl+/)' : '源码模式 (Ctrl+/)'"
+        @click="docStore.toggleSourceMode()"
+      >
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="16 18 22 12 16 6"></polyline>
+          <line x1="13.5" y1="5" x2="10.5" y2="19"></line>
+          <polyline points="8 6 2 12 8 18"></polyline>
+        </svg>
       </span>
     </div>
 
     <div class="statusbar-right">
-      <span class="status-item">{{ stats.characters }} 字符</span>
-      <span class="status-divider"></span>
       <span class="status-item">{{ stats.words }} 词</span>
-      <span class="status-divider"></span>
-      <span class="status-item">{{ stats.lines }} 行</span>
-      <span class="status-divider"></span>
-      <span class="status-item">Markdown</span>
+      <span class="status-icon-btn dev-entry" title="开发者模式 (F12)" @click="emit('toggleDev')">
+        <el-icon><Tools /></el-icon>
+      </span>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { useDocumentStore } from '@/stores/document'
-import { WarningFilled, CircleCheckFilled, Tools } from '@element-plus/icons-vue'
+import { Tools, ArrowLeft, ArrowRight } from '@element-plus/icons-vue'
 
 defineProps<{
   stats: {
@@ -47,57 +53,68 @@ const docStore = useDocumentStore()
 </script>
 
 <style lang="scss" scoped>
+// Typora 式底部功能区：只在文本区下方，与编辑区同底融合（无分隔线），极简三件套
 .statusbar {
-  height: 28px;
-  background: var(--bg-secondary);
-  border-top: 1px solid var(--border-color);
+  height: 32px;
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 16px;
+  gap: 12px;
+  padding: 0 12px;
+  background: var(--bg-primary);
   font-size: 12px;
   color: var(--text-muted);
+  user-select: none;
 
   .statusbar-left, .statusbar-right {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 4px;
   }
 
   .status-item {
     display: flex;
     align-items: center;
     gap: 4px;
+    padding: 0 4px;
+  }
 
-    &.dev-entry {
-      cursor: pointer;
-      padding: 2px 8px;
-      border-radius: 3px;
-      transition: all 0.2s;
-
-      &:hover {
-        background: var(--bg-tertiary);
-        color: var(--accent-color);
-      }
-    }
+  .status-icon-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 2px;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all 0.2s;
+    flex-shrink: 0;
 
     .el-icon {
       font-size: 14px;
+    }
 
-      &.warning {
-        color: #e6a23c;
-      }
+    svg {
+      display: block;
+    }
 
-      &.success {
-        color: #67c23a;
+    &:hover {
+      background: var(--bg-tertiary);
+      color: var(--accent-color);
+    }
+
+    // 源码模式激活态：方框态（Typora 式），发丝线描边 + 墨色
+    &.source-toggle.is-active {
+      background: var(--bg-tertiary);
+      box-shadow: inset 0 0 0 1px var(--border-color);
+      color: var(--accent-color);
+
+      &:hover {
+        box-shadow: inset 0 0 0 1px var(--text-muted);
       }
     }
-  }
-
-  .status-divider {
-    width: 1px;
-    height: 14px;
-    background: var(--border-color);
   }
 }
 </style>
