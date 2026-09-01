@@ -2,26 +2,69 @@
   <div class="toolbar" :class="{ 'is-fullscreen': docStore.isFullscreen, 'toolbar-hidden': docStore.isFullscreen && !toolbarHover }" @mouseenter="toolbarHover = true" @mouseleave="toolbarHover = false" @mousedown.prevent>
     <div class="toolbar-left">
       <TrafficLights />
-      <!-- 文件操作 -->
-      <el-dropdown trigger="click" @command="handleFileCommand">
-        <el-button text class="toolbar-btn">
+      <!-- 文件操作（分组：新建 / 打开 / 保存 / 导出，悬停或点击大类用 > 展开子项） -->
+      <div class="file-menu" ref="fileMenuRef">
+        <el-button text class="toolbar-btn" @click="fileMenuOpen = !fileMenuOpen">
           <el-icon><Document /></el-icon>
           <span>文件</span>
           <el-icon class="el-icon--right"><ArrowDown /></el-icon>
         </el-button>
-        <template #dropdown>
-          <el-dropdown-menu>
-            <el-dropdown-item command="new"><el-icon><DocumentAdd /></el-icon> 新建文档</el-dropdown-item>
-            <el-dropdown-item command="open"><el-icon><FolderOpened /></el-icon> 打开本地文件</el-dropdown-item>
-            <el-dropdown-item command="save" divided><el-icon><Download /></el-icon> 保存为MD</el-dropdown-item>
-            <el-dropdown-item command="cloudSave"><el-icon><Cloudy /></el-icon> 云端保存到服务器</el-dropdown-item>
-            <el-dropdown-item command="cloudFiles"><el-icon><Files /></el-icon> 云端文件</el-dropdown-item>
-            <el-dropdown-item command="exportHtml"><el-icon><DocumentCopy /></el-icon> 导出HTML</el-dropdown-item>
-            <el-dropdown-item command="exportPdf"><el-icon><Files /></el-icon> 导出PDF</el-dropdown-item>
-            <el-dropdown-item command="exportImage"><el-icon><Picture /></el-icon> 导出图片</el-dropdown-item>
-          </el-dropdown-menu>
-        </template>
-      </el-dropdown>
+        <Transition name="menu-pop">
+          <div v-if="fileMenuOpen" class="file-menu-panel" @mouseleave="expandedGroup = ''">
+            <div class="menu-group has-sub" :class="{ expanded: expandedGroup === 'new' }" @click="toggleGroup('new')">
+              <el-icon><DocumentAdd /></el-icon><span>新建</span>
+              <el-icon class="sub-arrow"><ArrowRight /></el-icon>
+              <div class="submenu">
+                <div class="menu-item" @click="runFileCommand('new')">
+                  <el-icon><DocumentAdd /></el-icon>新建文档
+                </div>
+              </div>
+            </div>
+
+            <div class="menu-group has-sub" :class="{ expanded: expandedGroup === 'open' }" @click="toggleGroup('open')">
+              <el-icon><FolderOpened /></el-icon><span>打开</span>
+              <el-icon class="sub-arrow"><ArrowRight /></el-icon>
+              <div class="submenu">
+                <div class="menu-item" @click="runFileCommand('open')">
+                  <el-icon><FolderOpened /></el-icon>打开本地文件
+                </div>
+                <div class="menu-item" @click="runFileCommand('cloudFiles')">
+                  <el-icon><Files /></el-icon>从云端打开
+                </div>
+              </div>
+            </div>
+
+            <div class="menu-group has-sub" :class="{ expanded: expandedGroup === 'save' }" @click="toggleGroup('save')">
+              <el-icon><Download /></el-icon><span>保存</span>
+              <el-icon class="sub-arrow"><ArrowRight /></el-icon>
+              <div class="submenu">
+                <div class="menu-item" @click="runFileCommand('save')">
+                  <el-icon><Download /></el-icon>保存为 MD
+                </div>
+                <div class="menu-item" @click="runFileCommand('cloudSave')">
+                  <el-icon><Cloudy /></el-icon>云端保存到服务器
+                </div>
+              </div>
+            </div>
+
+            <div class="menu-group has-sub" :class="{ expanded: expandedGroup === 'export' }" @click="toggleGroup('export')">
+              <el-icon><Upload /></el-icon><span>导出</span>
+              <el-icon class="sub-arrow"><ArrowRight /></el-icon>
+              <div class="submenu">
+                <div class="menu-item" @click="runFileCommand('exportHtml')">
+                  <el-icon><DocumentCopy /></el-icon>导出 HTML
+                </div>
+                <div class="menu-item" @click="runFileCommand('exportPdf')">
+                  <el-icon><Files /></el-icon>导出 PDF
+                </div>
+                <div class="menu-item" @click="runFileCommand('exportImage')">
+                  <el-icon><Picture /></el-icon>导出图片
+                </div>
+              </div>
+            </div>
+          </div>
+        </Transition>
+      </div>
 
       <el-divider direction="vertical" />
 
@@ -216,13 +259,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { useDocumentStore } from '@/stores/document'
 import { useAIStore } from '@/stores/ai'
 import {
-  Document, ArrowDown, DocumentAdd, FolderOpened, Download, DocumentCopy, Files, Picture, PictureFilled,
+  Document, ArrowDown, ArrowRight, DocumentAdd, FolderOpened, Download, DocumentCopy, Files, Picture, PictureFilled,
   Postcard, MagicStick, Grid, ChatDotSquare, List, Select, Link, Minus, Top,
-  Search, Sunny, Moon, Coffee, Brush, Pouring, Menu, FullScreen, Cloudy
+  Search, Sunny, Moon, Coffee, Brush, Pouring, Menu, FullScreen, Cloudy, Upload
 } from '@element-plus/icons-vue'
 import { readMdFile } from '@/utils/export'
 import TrafficLights from './TrafficLights.vue'
@@ -244,11 +287,47 @@ const toolbarHover = ref(true)
 const isAlwaysOnTop = ref(false)
 const ib64Visible = ref(false)
 
+// 文件分组菜单（新建/打开/保存/导出）
+const fileMenuRef = ref<HTMLDivElement>()
+const fileMenuOpen = ref(false)
+const expandedGroup = ref('')
+
+function toggleGroup(name: string) {
+  expandedGroup.value = expandedGroup.value === name ? '' : name
+}
+
+function closeFileMenu() {
+  fileMenuOpen.value = false
+  expandedGroup.value = ''
+}
+
+function runFileCommand(command: string) {
+  closeFileMenu()
+  handleFileCommand(command)
+}
+
+function onDocClick(e: MouseEvent) {
+  if (fileMenuOpen.value && fileMenuRef.value && !fileMenuRef.value.contains(e.target as Node)) {
+    closeFileMenu()
+  }
+}
+
+function onGlobalKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && fileMenuOpen.value) closeFileMenu()
+}
+
 onMounted(async () => {
+  document.addEventListener('click', onDocClick)
+  document.addEventListener('keydown', onGlobalKeydown)
   isAlwaysOnTop.value = !!(await (window as any).electronAPI?.winIsAlwaysOnTop?.())
   ;(window as any).electronAPI?.onAlwaysOnTopChange?.((v: boolean) => {
     isAlwaysOnTop.value = v
   })
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('click', onDocClick)
+  document.removeEventListener('keydown', onGlobalKeydown)
 })
 
 async function toggleAlwaysOnTop() {
@@ -390,6 +469,91 @@ async function handleOpenFile(e: Event) {
       background: var(--bg-secondary);
     }
   }
+  // 文件分组菜单（新建/打开/保存/导出，悬停或点击大类展开子项）
+  .file-menu {
+    position: relative;
+
+    .file-menu-panel {
+      position: absolute;
+      top: calc(100% + 6px);
+      left: 0;
+      min-width: 148px;
+      padding: 5px 0;
+      background: var(--bg-primary);
+      border: 1px solid var(--border-color);
+      border-radius: 2px;
+      box-shadow: var(--shadow);
+      z-index: 210;
+    }
+
+    .menu-group, .menu-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      height: 34px;
+      padding: 0 14px;
+      font-size: 13px;
+      color: var(--text-primary);
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background 0.2s;
+
+      .el-icon {
+        font-size: 15px;
+        color: var(--text-muted);
+        flex-shrink: 0;
+      }
+
+      &:hover {
+        background: var(--bg-tertiary);
+      }
+    }
+
+    .menu-group.has-sub {
+      position: relative;
+
+      .sub-arrow {
+        margin-left: auto;
+        font-size: 12px;
+        transition: transform 0.2s;
+      }
+
+      &:hover .sub-arrow,
+      &.expanded .sub-arrow {
+        transform: rotate(90deg);
+      }
+
+      .submenu {
+        position: absolute;
+        left: 100%;
+        top: -6px;
+        min-width: 176px;
+        padding: 5px 0;
+        background: var(--bg-primary);
+        border: 1px solid var(--border-color);
+        border-radius: 2px;
+        box-shadow: var(--shadow);
+        opacity: 0;
+        visibility: hidden;
+        transition: opacity 0.18s ease, visibility 0.18s ease;
+      }
+
+      &:hover > .submenu,
+      &.expanded > .submenu {
+        opacity: 1;
+        visibility: visible;
+      }
+    }
+  }
+
+  .menu-pop-enter-active, .menu-pop-leave-active {
+    transition: opacity 0.18s ease, transform 0.18s ease;
+  }
+  .menu-pop-enter-from, .menu-pop-leave-to {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+
   .format-btn span {
     font-size: 14px;
     font-weight: 500;
