@@ -144,34 +144,60 @@ watch(() => docStore.currentTheme, () => {
   })
 })
 
-// 源码模式切换时同步内容，避免切换丢失
+// 源码模式切换时同步内容，并保持光标/视口位置（对标 Typora：操作处不变）
 watch(() => docStore.isSourceMode, (isSource) => {
   if (isSource) {
-    // 切到源码前：记录光标所在块文本（用于切回后定位光标），并同步内容到 store
-    let blockText = ''
-    if (editorRef.value) {
-      const sel = window.getSelection()
-      const block = sel && sel.rangeCount > 0 ? getCurrentBlock(sel) : null
-      if (block) blockText = (block.textContent || '').trim()
+    // 切到源码前：记录光标/选区所在的块与块内偏移，并同步内容到 store
+    let startBlockText = ''
+    let endBlockText = ''
+    let startOffset = 0
+    let endOffset = 0
+    const sel = window.getSelection()
+    let range: Range | null = sel && sel.rangeCount > 0 ? sel.getRangeAt(0) : null
+    // 点击状态栏等 UI 可能已清空实时选区，回退到最近记录的选区
+    if ((!range || !editorRef.value?.contains(range.startContainer)) && lastSelectionRange) {
+      range = lastSelectionRange
+    }
+    if (editorRef.value && range && editorRef.value.contains(range.startContainer)) {
+      const startBlock = getBlockFromNode(range.startContainer)
+      if (startBlock) {
+        startBlockText = (startBlock.textContent || '').trim()
+        startOffset = getOffsetInBlock(range, startBlock, false)
+        const endBlock = range.collapsed ? startBlock : getBlockFromNode(range.endContainer)
+        if (endBlock) {
+          endBlockText = (endBlock.textContent || '').trim()
+          endOffset = getOffsetInBlock(range, endBlock, true)
+        }
+      }
       const md = htmlToMd(editorRef.value.innerHTML)
       syncingFromInput = true
       docStore.updateContent(md)
     }
-    // 自适应高度 + 光标定位到原块对应的源码行（而非每次都回第一行）
+    // 自适应高度 + 光标/选区定位到原块对应的源码位置，并滚动到可视区
     nextTick(() => {
       autoResizeTextarea()
       const ta = textareaRef.value
       if (!ta) return
       const content = docStore.activeDocument?.content || ''
-      const pos = findSourcePosForBlock(content, blockText)
+      const start = findSourcePosForBlock(content, startBlockText, startOffset)
+      // 终点块从起点之后开始找，避免同名块（如重复列表项）误配到起点之前
+      const end = endBlockText
+        ? Math.max(start, findSourcePosForBlock(content, endBlockText, endOffset, start))
+        : start
       ta.focus({ preventScroll: true })
-      ta.setSelectionRange(pos, pos)
+      ta.setSelectionRange(start, end)
       scrollToCaretInTextarea(ta)
     })
   } else {
-    // 切回所见即所得：重新渲染 store 内容
+    // 切回所见即所得：先记录源码光标所在行对应的块文本，渲染后把光标放回同一块
+    const ta = textareaRef.value
+    const content = docStore.activeDocument?.content || ''
+    const caretLine = ta ? findBlockForSourcePos(content, ta.selectionStart) : null
     syncingFromInput = false
-    renderContent(docStore.activeDocument?.content || '')
+    renderContent(content)
+    nextTick(() => {
+      restoreCaretToWysiwyg(caretLine)
+    })
   }
 })
 
@@ -203,34 +229,145 @@ function stripMdSyntax(line: string): string {
     .trim()
 }
 
-// 在源码中找到与所见即所得块文本匹配的行起始偏移（行级光标保持）
-function findSourcePosForBlock(content: string, blockText: string): number {
+// 由任意节点向上找到所属块级元素（含 PRE，代码块内光标也能定位；向上查找天然取最深匹配）
+function getBlockFromNode(node: Node | null): HTMLElement | null {
+  let n: Node | null = node
+  if (n && n.nodeType === Node.TEXT_NODE) n = n.parentElement
+  while (n && n !== editorRef.value) {
+    const el = n as HTMLElement
+    if (['P', 'LI', 'BLOCKQUOTE', 'PRE', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6'].includes(el.tagName)) {
+      return el
+    }
+    n = el.parentElement
+  }
+  return null
+}
+
+// 计算选区起点/终点相对块内文本的字符偏移（用于映射到源码行内位置）
+function getOffsetInBlock(range: Range, block: HTMLElement, isEnd: boolean): number {
+  const pre = document.createRange()
+  pre.selectNodeContents(block)
+  try {
+    if (isEnd) pre.setEnd(range.endContainer, range.endOffset)
+    else pre.setEnd(range.startContainer, range.startOffset)
+  } catch {
+    return 0
+  }
+  return pre.toString().length
+}
+
+// 在源码中找到与所见即所得块文本匹配的行，返回源码偏移
+// offsetInBlock 为块内字符偏移，近似映射为「行首语法长度 + 偏移」落在行内
+// fromIndex 用于跨块选区：终点块从起点之后开始找，避免同名块（如重复列表项）误配
+function findSourcePosForBlock(content: string, blockText: string, offsetInBlock = 0, fromIndex = 0): number {
   if (!blockText) return 0
   const target = blockText.trim()
   const lines = content.split('\n')
   let offset = 0
   for (const line of lines) {
-    const stripped = stripMdSyntax(line)
-    if (stripped && (stripped === target || target.startsWith(stripped) || stripped.startsWith(target))) {
-      return offset
+    const lineEnd = offset + line.length
+    if (lineEnd >= fromIndex) {
+      const stripped = stripMdSyntax(line)
+      if (stripped && (stripped === target || target.startsWith(stripped) || stripped.startsWith(target))) {
+        const syntaxLen = Math.max(0, line.length - stripped.length)
+        return offset + Math.min(syntaxLen + offsetInBlock, line.length)
+      }
     }
-    offset += line.length + 1
+    offset = lineEnd + 1
   }
   return 0
 }
 
-// 滚动使 textarea 光标行可见（textarea 被 autoResizeTextarea 撑高，滚动发生在 .editor-container）
+// 由源码偏移找到所在行对应的渲染块文本与块内偏移（切回所见即所得时用）
+function findBlockForSourcePos(content: string, pos: number): { text: string; offset: number } | null {
+  if (!content) return null
+  const lineStart = content.lastIndexOf('\n', Math.max(0, pos - 1)) + 1
+  let lineEnd = content.indexOf('\n', lineStart)
+  if (lineEnd === -1) lineEnd = content.length
+  const line = content.slice(lineStart, lineEnd)
+  const stripped = stripMdSyntax(line)
+  if (!stripped) return null
+  const syntaxLen = Math.max(0, line.length - stripped.length)
+  return { text: stripped, offset: Math.max(0, Math.min(pos - lineStart - syntaxLen, stripped.length)) }
+}
+
+// 向上找最近的可滚动祖先（编辑区实际滚动发生在 .editor-wrapper，container 自身不滚动）
+function getScrollParent(el: HTMLElement | null): HTMLElement | null {
+  let p = el?.parentElement || null
+  while (p) {
+    const oy = getComputedStyle(p).overflowY
+    if (oy === 'auto' || oy === 'scroll') return p
+    p = p.parentElement
+  }
+  return null
+}
+
+// 滚动使 textarea 光标行可见：滚真正生效的滚动容器
 // 用 rAF 延迟设值，覆盖 focus 触发的浏览器默认滚动；配合 focus({preventScroll:true}) 确保聚焦光标行
 function scrollToCaretInTextarea(ta: HTMLTextAreaElement) {
-  const doScroll = () => {
+  requestAnimationFrame(() => {
+    const scroller = getScrollParent(ta)
+    if (!scroller) return
     const lineHeight = parseFloat(getComputedStyle(ta).lineHeight) || 22
     const lineNum = ta.value.slice(0, ta.selectionStart).split('\n').length - 1
-    const target = lineNum * lineHeight
-    if (containerRef.value) {
-      containerRef.value.scrollTop = Math.max(0, target - containerRef.value.clientHeight / 3)
+    const taTop = ta.getBoundingClientRect().top - scroller.getBoundingClientRect().top
+    scroller.scrollTop = Math.max(0, taTop + lineNum * lineHeight - scroller.clientHeight / 3)
+  })
+}
+
+// 滚动最近可滚动祖先，使选区出现在视口上三分之一处
+function scrollToRange(range: Range) {
+  const scroller = getScrollParent(editorRef.value || null)
+  if (!scroller) return
+  const rect = range.getBoundingClientRect()
+  if (!rect || (rect.top === 0 && rect.bottom === 0)) return
+  const sRect = scroller.getBoundingClientRect()
+  scroller.scrollTop += rect.top - (sRect.top + scroller.clientHeight / 3)
+}
+
+// 把 Range 起点放到 root 内第 offset 个字符处（沿文本节点累积，跨高亮 span 也适用）
+function placeCaretAtTextOffset(range: Range, root: HTMLElement, offset: number): boolean {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+  let remaining = offset
+  let node: Node | null
+  while ((node = walker.nextNode())) {
+    const len = node.textContent?.length || 0
+    if (remaining <= len) {
+      range.setStart(node, remaining)
+      range.collapse(true)
+      return true
     }
+    remaining -= len
   }
-  requestAnimationFrame(doScroll)
+  return false
+}
+
+// 切回所见即所得后，把光标放回与源码行对应的块内
+function restoreCaretToWysiwyg(info: { text: string; offset: number } | null) {
+  const ed = editorRef.value
+  if (!ed || !info) return
+  const blocks = Array.from(ed.querySelectorAll('p, h1, h2, h3, h4, h5, h6, li, blockquote, pre')) as HTMLElement[]
+  const matches = blocks.filter(el => {
+    const t = (el.textContent || '').trim()
+    return t && (t === info.text || t.startsWith(info.text) || info.text.startsWith(t))
+  })
+  if (!matches.length) return
+  // 嵌套块（blockquote > p）取最深匹配
+  const target = matches.slice().reverse().find(el => !matches.some(m => m !== el && el.contains(m))) || matches[0]
+  const sel = window.getSelection()
+  if (!sel) return
+  ed.focus({ preventScroll: true })
+  const all = target.textContent || ''
+  // 代码块（pre）等块文本长于匹配行时，先定位行在块内的位置再加块内偏移
+  const base = Math.max(0, all.indexOf(info.text))
+  const range = document.createRange()
+  if (!placeCaretAtTextOffset(range, target, Math.min(base + info.offset, all.length))) {
+    range.selectNodeContents(target)
+    range.collapse(true)
+  }
+  sel.removeAllRanges()
+  sel.addRange(range)
+  scrollToRange(range)
 }
 
 // 防抖渲染（外部内容变化，如切换文档、源码模式回写）
