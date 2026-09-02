@@ -19,12 +19,12 @@
       v-html="renderedContent"
     ></div>
 
-    <!-- 源码编辑模式 -->
+    <!-- 源码编辑模式（base64 折叠为占位符的视图文本，store 始终保存完整原文） -->
     <textarea
       v-else
       ref="textareaRef"
       class="source-editor"
-      :value="docStore.activeDocument?.content"
+      :value="sourceView"
       @input="handleSourceInput"
       @contextmenu.prevent="onContextMenu"
       spellcheck="false"
@@ -114,8 +114,9 @@ watch(() => docStore.activeDocId, (newId, oldId) => {
   syncingFromInput = false
   const content = docStore.activeDocument?.content ?? ''
   renderContent(content)
-  // 源码模式下切换文档，textarea 需重新自适应高度
+  // 源码模式下切换文档：为新文档重建折叠视图，textarea 重新自适应高度
   if (docStore.isSourceMode) {
+    sourceView.value = buildSourceView(content)
     nextTick(() => autoResizeTextarea())
   }
 }, { immediate: true })
@@ -144,14 +145,109 @@ watch(() => docStore.currentTheme, () => {
   })
 })
 
+// ============ 源码模式 base64 折叠显示（视图层省略，store 始终保存完整原文） ============
+// 超过该字符数的 base64 data URI 在源码视图中折叠为占位符（小图标不折腾）
+const ELIDE_MIN_B64 = 2048
+// 完整图片：![alt](data:image/png;base64,AAAA…)（base64 段达到折叠阈值才匹配）
+const B64_IMG_RE = new RegExp(`!\\[([^\\]\\n]*)\\]\\((data:[^;,\\s]+;base64,)([^)\\s]{${ELIDE_MIN_B64},})\\)`, 'g')
+// 折叠占位符：![alt](data:image/png;base64,iVBORw0KGgoABCD…【已省略 132.5KB · #k3x9z2】)
+const ELIDED_VIEW_RE = /!\[[^\]\n]*\]\(data:[^;,\s]+;base64,[^)\s]{0,64}…【已省略 [^】]*#([0-9a-z]+)】\)/g
+
+// 折叠占位符 id → 完整原始图片 Markdown（切回/保存/导出时按 id 还原）
+const sourceImgMap = new Map<string, string>()
+// 源码视图文本（base64 已折叠），textarea 绑定它而非 store 原文
+const sourceView = ref('')
+
+function hashId(s: string): string {
+  let h = 5381
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0
+  return (h >>> 0).toString(36)
+}
+
+function formatBytes(n: number): string {
+  if (n >= 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + 'MB'
+  return (n / 1024).toFixed(1) + 'KB'
+}
+
+// 由完整内容构建折叠视图，并登记 id → 原图映射
+function buildSourceView(real: string): string {
+  sourceImgMap.clear()
+  return real.replace(B64_IMG_RE, (full: string, alt: string, head: string, b64: string) => {
+    const id = hashId(full)
+    sourceImgMap.set(id, full)
+    return `![${alt}](${head}${b64.slice(0, 16)}…【已省略 ${formatBytes(b64.length * 0.75)} #${id}】)`
+  })
+}
+
+// 视图文本还原为完整 Markdown（按 id 映射；映射缺失则保留原样，如用户手打的同形文本）
+function inflateSourceView(view: string): string {
+  if (!sourceImgMap.size) return view
+  return view.replace(ELIDED_VIEW_RE, (m: string, id: string) => sourceImgMap.get(id) || m)
+}
+
+interface ViewRegion { viewStart: number; viewEnd: number; realStart: number; realEnd: number }
+
+// 由当前视图与真实内容即时计算折叠区间（编辑后位置会漂移，不能缓存入口时的坐标）
+function buildViewRegions(view: string, real: string): ViewRegion[] {
+  const regions: ViewRegion[] = []
+  if (!sourceImgMap.size || view.indexOf('【已省略') === -1) return regions
+  const searched = new Map<string, number>()
+  let m: RegExpExecArray | null
+  ELIDED_VIEW_RE.lastIndex = 0
+  while ((m = ELIDED_VIEW_RE.exec(view)) !== null) {
+    const orig = sourceImgMap.get(m[1])
+    if (!orig) continue
+    const at = real.indexOf(orig, searched.get(m[1]) || 0)
+    if (at === -1) continue
+    searched.set(m[1], at + orig.length)
+    regions.push({ viewStart: m.index, viewEnd: m.index + m[0].length, realStart: at, realEnd: at + orig.length })
+  }
+  ELIDED_VIEW_RE.lastIndex = 0
+  return regions
+}
+
+// 视图偏移 → 真实偏移（forEnd=true 时落在折叠区间内的选区终点映射到区间末尾）
+function viewOffsetToReal(regions: ViewRegion[], v: number, forEnd = false): number {
+  let delta = 0
+  for (const r of regions) {
+    if (v >= r.viewEnd) {
+      delta += (r.realEnd - r.realStart) - (r.viewEnd - r.viewStart)
+    } else if (v > r.viewStart) {
+      return forEnd ? r.realEnd : r.realStart
+    } else {
+      break
+    }
+  }
+  return v + delta
+}
+
+// 真实偏移 → 视图偏移（落在折叠区间内时钳制到占位符起点）
+function realOffsetToView(regions: ViewRegion[], r: number): number {
+  let delta = 0
+  for (const reg of regions) {
+    if (r >= reg.realEnd) {
+      delta += (reg.viewEnd - reg.viewStart) - (reg.realEnd - reg.realStart)
+    } else if (r > reg.realStart) {
+      return reg.viewStart
+    } else {
+      break
+    }
+  }
+  return r + delta
+}
+
 // 源码模式切换时同步内容，并保持光标/视口位置（对标 Typora：操作处不变）
 watch(() => docStore.isSourceMode, (isSource) => {
   if (isSource) {
     // 切到源码前：记录光标/选区所在的块与块内偏移，并同步内容到 store
-    let startBlockText = ''
-    let endBlockText = ''
+    let startBlock: HTMLElement | null = null
+    let endBlock: HTMLElement | null = null
     let startOffset = 0
     let endOffset = 0
+    let srcStart = 0
+    let srcEnd = 0
+    let viewStart = 0
+    let viewEnd = 0
     const sel = window.getSelection()
     let range: Range | null = sel && sel.rangeCount > 0 ? sel.getRangeAt(0) : null
     // 点击状态栏等 UI 可能已清空实时选区，回退到最近记录的选区
@@ -159,40 +255,45 @@ watch(() => docStore.isSourceMode, (isSource) => {
       range = lastSelectionRange
     }
     if (editorRef.value && range && editorRef.value.contains(range.startContainer)) {
-      const startBlock = getBlockFromNode(range.startContainer)
+      startBlock = getBlockFromNode(range.startContainer)
       if (startBlock) {
-        startBlockText = (startBlock.textContent || '').trim()
         startOffset = getOffsetInBlock(range, startBlock, false)
-        const endBlock = range.collapsed ? startBlock : getBlockFromNode(range.endContainer)
-        if (endBlock) {
-          endBlockText = (endBlock.textContent || '').trim()
-          endOffset = getOffsetInBlock(range, endBlock, true)
-        }
+        endBlock = range.collapsed ? startBlock : getBlockFromNode(range.endContainer)
+        if (endBlock) endOffset = getOffsetInBlock(range, endBlock, true)
       }
       const md = htmlToMd(editorRef.value.innerHTML)
       syncingFromInput = true
       docStore.updateContent(md)
+      // 源码偏移须在所见即所得 DOM 卸载前算好（邻居锚定依赖块列表）
+      const content = docStore.activeDocument?.content || ''
+      srcStart = resolveSourceCaret(content, startBlock, startOffset)
+      // 终点块从起点之后开始找，避免同名块（如重复列表项）误配到起点之前
+      srcEnd = endBlock && endBlock !== startBlock
+        ? Math.max(srcStart, resolveSourceCaret(content, endBlock, endOffset, srcStart))
+        : srcStart
     }
+    // 无论光标是否有效，进入源码都要构建折叠视图（base64 占位符），光标偏移换算到视图坐标
+    const content = docStore.activeDocument?.content || ''
+    sourceView.value = buildSourceView(content)
+    const regions = buildViewRegions(sourceView.value, content)
+    viewStart = realOffsetToView(regions, srcStart)
+    viewEnd = realOffsetToView(regions, srcEnd)
     // 自适应高度 + 光标/选区定位到原块对应的源码位置，并滚动到可视区
     nextTick(() => {
       autoResizeTextarea()
       const ta = textareaRef.value
       if (!ta) return
-      const content = docStore.activeDocument?.content || ''
-      const start = findSourcePosForBlock(content, startBlockText, startOffset)
-      // 终点块从起点之后开始找，避免同名块（如重复列表项）误配到起点之前
-      const end = endBlockText
-        ? Math.max(start, findSourcePosForBlock(content, endBlockText, endOffset, start))
-        : start
       ta.focus({ preventScroll: true })
-      ta.setSelectionRange(start, end)
+      ta.setSelectionRange(viewStart, Math.max(viewStart, viewEnd))
       scrollToCaretInTextarea(ta)
     })
   } else {
-    // 切回所见即所得：先记录源码光标所在行对应的块文本，渲染后把光标放回同一块
+    // 切回所见即所得：源码视图光标换算回真实偏移，记录所在块，渲染后放回同一块
     const ta = textareaRef.value
     const content = docStore.activeDocument?.content || ''
-    const caretLine = ta ? findBlockForSourcePos(content, ta.selectionStart) : null
+    const regions = buildViewRegions(ta?.value || '', content)
+    const realCaret = ta ? viewOffsetToReal(regions, ta.selectionStart) : 0
+    const caretLine = ta ? findBlockForSourcePos(content, realCaret) : null
     syncingFromInput = false
     renderContent(content)
     nextTick(() => {
@@ -202,11 +303,35 @@ watch(() => docStore.isSourceMode, (isSource) => {
 })
 
 // 源码模式 textarea 自适应高度（撑开编辑区，避免内容显示不全）
+// 用隐藏镜像元素测量内容高度：textarea 上「height:auto → 读 scrollHeight」的塌缩测高
+// 会在每次按键时强制布局并钳制真实滚动容器（.editor-wrapper）的 scrollTop，视口跳动。
+// 镜像完全脱离文档流，测量不扰动编辑区布局。
+let sourceMirror: HTMLDivElement | null = null
 function autoResizeTextarea() {
   const ta = textareaRef.value
   if (!ta) return
-  ta.style.height = 'auto'
-  ta.style.height = Math.max(ta.scrollHeight, ta.parentElement?.clientHeight || 0) + 'px'
+  if (!sourceMirror) {
+    sourceMirror = document.createElement('div')
+    sourceMirror.style.position = 'absolute'
+    sourceMirror.style.visibility = 'hidden'
+    sourceMirror.style.top = '0'
+    sourceMirror.style.left = '-9999px'
+    sourceMirror.style.whiteSpace = 'pre-wrap'
+    sourceMirror.style.wordWrap = 'break-word'
+    document.body.appendChild(sourceMirror)
+  }
+  const m = sourceMirror
+  // 同步决定换行的关键样式与宽度，保证镜像行数与 textarea 一致
+  const cs = getComputedStyle(ta)
+  m.style.font = cs.font
+  m.style.lineHeight = cs.lineHeight
+  m.style.padding = cs.padding
+  m.style.boxSizing = cs.boxSizing
+  m.style.width = ta.clientWidth + 'px'
+  // 补一个换行：末尾有换行符时 scrollHeight 也能多算一行
+  m.textContent = ta.value + '\n'
+  const target = Math.max(m.scrollHeight, ta.parentElement?.clientHeight || 0)
+  if (ta.style.height !== target + 'px') ta.style.height = target + 'px'
 }
 
 // 去除 markdown 行首/行内语法，得到渲染后的纯文本（用于源码行与所见即所得块文本匹配）
@@ -256,39 +381,120 @@ function getOffsetInBlock(range: Range, block: HTMLElement, isEnd: boolean): num
   return pre.toString().length
 }
 
-// 在源码中找到与所见即所得块文本匹配的行，返回源码偏移
-// offsetInBlock 为块内字符偏移，近似映射为「行首语法长度 + 偏移」落在行内
+// 在源码中找到与所见即所得块文本匹配的行，返回该行的源码范围
+// 两段式匹配：先精确/前缀（避免误配），都不中再 endsWith 兼容「alt + 正文」的图文混排行
 // fromIndex 用于跨块选区：终点块从起点之后开始找，避免同名块（如重复列表项）误配
-function findSourcePosForBlock(content: string, blockText: string, offsetInBlock = 0, fromIndex = 0): number {
-  if (!blockText) return 0
+function findSourceLineForBlock(content: string, blockText: string, fromIndex = 0): { start: number; end: number } | null {
+  if (!blockText) return null
   const target = blockText.trim()
   const lines = content.split('\n')
+  const starts: number[] = []
   let offset = 0
   for (const line of lines) {
-    const lineEnd = offset + line.length
-    if (lineEnd >= fromIndex) {
-      const stripped = stripMdSyntax(line)
-      if (stripped && (stripped === target || target.startsWith(stripped) || stripped.startsWith(target))) {
-        const syntaxLen = Math.max(0, line.length - stripped.length)
-        return offset + Math.min(syntaxLen + offsetInBlock, line.length)
-      }
+    starts.push(offset)
+    offset += line.length + 1
+  }
+  for (const pass of [0, 1]) {
+    for (let i = 0; i < lines.length; i++) {
+      const lineStart = starts[i]
+      if (lineStart + (lines[i]?.length || 0) < fromIndex) continue
+      const stripped = stripMdSyntax(lines[i] || '')
+      if (!stripped) continue
+      const hit = pass === 0
+        ? (stripped === target || target.startsWith(stripped) || stripped.startsWith(target))
+        : stripped.endsWith(target)
+      if (hit) return { start: lineStart, end: lineStart + (lines[i]?.length || 0) }
     }
-    offset = lineEnd + 1
+  }
+  return null
+}
+
+// 在源码中定位块文本对应的偏移
+// 正文若在源码行中原样出现（如图文混排「![alt](…)正文」）→ indexOf 直接精确定位；
+// 否则按块内偏移近似映射为「行首语法长度 + 偏移」落在行内
+function findSourcePosForBlock(content: string, blockText: string, offsetInBlock = 0, fromIndex = 0): number {
+  const m = findSourceLineForBlock(content, blockText, fromIndex)
+  if (!m) return 0
+  const line = content.slice(m.start, m.end)
+  const rawIdx = line.indexOf(blockText.trim())
+  if (rawIdx >= 0) return m.start + Math.min(rawIdx + offsetInBlock, line.length)
+  const stripped = stripMdSyntax(line)
+  const syntaxLen = Math.max(0, line.length - stripped.length)
+  return m.start + Math.min(syntaxLen + offsetInBlock, line.length)
+}
+
+// 解析「切换源码后」的光标源码偏移：
+// 1) 块文本可匹配 → 块内偏移映射到源码行内
+// 2) 块无文本或匹配失败（如纯 base64 图片块，textContent 为空、源码行剥离后也为空）
+//    → 按 DOM 块顺序锚定最近的文本块：向前取其行尾，向后取其行首，避免光标掉回文档开头
+function resolveSourceCaret(content: string, block: HTMLElement | null, offsetInBlock: number, searchFrom = 0): number {
+  const ed = editorRef.value
+  if (!ed) return 0
+  if (block) {
+    const t = (block.textContent || '').trim()
+    if (t) {
+      const pos = findSourcePosForBlock(content, t, offsetInBlock, searchFrom)
+      if (pos > 0) return pos
+    }
+  }
+  const blocks = Array.from(ed.querySelectorAll('p, h1, h2, h3, h4, h5, h6, li, blockquote, pre')) as HTMLElement[]
+  const idx = block ? blocks.indexOf(block) : -1
+  for (let i = idx - 1; i >= 0; i--) {
+    const t = (blocks[i].textContent || '').trim()
+    if (!t) continue
+    const m = findSourceLineForBlock(content, t, searchFrom)
+    if (m) return m.end
+  }
+  for (let i = idx + 1; i < blocks.length; i++) {
+    const t = (blocks[i].textContent || '').trim()
+    if (!t) continue
+    const m = findSourceLineForBlock(content, t, searchFrom)
+    if (m) {
+      // 向前越过紧邻的空行/纯图片行（剥离后无文本的「哑行」）：
+      // 图片在文首等场景，光标应落在图片行本身，而不是跳过它到下一个文本行
+      const lines = content.split('\n')
+      let s = m.start
+      let li = content.slice(0, s).split('\n').length - 1
+      while (li > 0) {
+        const prev = lines[li - 1] || ''
+        if (prev.trim() && stripMdSyntax(prev)) break
+        s -= prev.length + 1
+        li--
+      }
+      return s
+    }
   }
   return 0
 }
 
 // 由源码偏移找到所在行对应的渲染块文本与块内偏移（切回所见即所得时用）
+// 空行/纯图片行（剥离后无文本）：向前找最近有文本的行定位其行尾，向后兜底取行首
 function findBlockForSourcePos(content: string, pos: number): { text: string; offset: number } | null {
   if (!content) return null
+  const lines = content.split('\n')
   const lineStart = content.lastIndexOf('\n', Math.max(0, pos - 1)) + 1
-  let lineEnd = content.indexOf('\n', lineStart)
-  if (lineEnd === -1) lineEnd = content.length
-  const line = content.slice(lineStart, lineEnd)
-  const stripped = stripMdSyntax(line)
-  if (!stripped) return null
-  const syntaxLen = Math.max(0, line.length - stripped.length)
-  return { text: stripped, offset: Math.max(0, Math.min(pos - lineStart - syntaxLen, stripped.length)) }
+  let lineIdx = content.slice(0, lineStart).split('\n').length - 1
+  const mapLine = (line: string) => {
+    const stripped = stripMdSyntax(line)
+    if (!stripped) return null
+    const syntaxLen = Math.max(0, line.length - stripped.length)
+    const clamp = (v: number) => Math.max(0, Math.min(v, stripped.length))
+    return { text: stripped, offset: clamp }
+  }
+  const cur = mapLine(lines[lineIdx] || '')
+  if (cur) {
+    const lineStartOff = content.lastIndexOf('\n', Math.max(0, pos - 1)) + 1
+    return { text: cur.text, offset: cur.offset(pos - lineStartOff) }
+  }
+  for (let i = lineIdx - 1; i >= 0; i--) {
+    const prev = mapLine(lines[i] || '')
+    if (prev) return { text: prev.text, offset: prev.offset(Infinity) }
+  }
+  for (let i = lineIdx + 1; i < lines.length; i++) {
+    const next = mapLine(lines[i] || '')
+    if (next) return { text: next.text, offset: next.offset(0) }
+  }
+  return null
 }
 
 // 向上找最近的可滚动祖先（编辑区实际滚动发生在 .editor-wrapper，container 自身不滚动）
@@ -1171,10 +1377,10 @@ async function handleDrop(e: DragEvent) {
   }
 }
 
-// 源码模式输入
+// 源码模式输入：视图含折叠占位符，先还原完整 Markdown 再入 store
 function handleSourceInput(e: Event) {
   const value = (e.target as HTMLTextAreaElement).value
-  docStore.updateContent(value)
+  docStore.updateContent(inflateSourceView(value))
   autoResizeTextarea()
 }
 
@@ -1858,7 +2064,7 @@ function insertFormat(action: string, value?: string) {
         insertMarkdown(textarea, tableTemplate, '', '')
         break
     }
-    docStore.updateContent(textarea.value)
+    docStore.updateContent(inflateSourceView(textarea.value))
   } else {
     // 所见即所得：选区在编辑区内时直接操作，不强制 focus（避免丢失选区）
     const sel = window.getSelection()
@@ -2019,7 +2225,7 @@ function flushSync() {
     emit('outlineUpdate', outline)
     updateStats()
   } else if (docStore.isSourceMode && textareaRef.value) {
-    docStore.updateContent(textareaRef.value.value)
+    docStore.updateContent(inflateSourceView(textareaRef.value.value))
   }
 }
 
@@ -2077,7 +2283,7 @@ function insertTextAtCursor(text: string) {
     const start = ta.selectionStart
     const end = ta.selectionEnd
     const val = ta.value
-    docStore.updateContent(val.slice(0, start) + text + val.slice(end))
+    docStore.updateContent(inflateSourceView(val.slice(0, start) + text + val.slice(end)))
     nextTick(() => {
       ta.focus()
       const pos = start + text.length
@@ -2104,7 +2310,7 @@ function replaceSelection(text: string) {
     const start = ta.selectionStart
     const end = ta.selectionEnd
     const val = ta.value
-    docStore.updateContent(val.slice(0, start) + text + val.slice(end))
+    docStore.updateContent(inflateSourceView(val.slice(0, start) + text + val.slice(end)))
     nextTick(() => {
       ta.focus()
       const pos = start + text.length
@@ -2167,16 +2373,17 @@ onMounted(() => {
 onUnmounted(() => {
   document.removeEventListener('selectionchange', trackSelection)
   editorRef.value?.removeEventListener('mouseup', trackSelection)
+  sourceMirror?.remove()
+  sourceMirror = null
 })
 </script>
 
 <style lang="scss" scoped>
 .editor-container {
   flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
   background: var(--bg-primary);
   position: relative;
+  // 不设 overflow：编辑区滚动只发生在 .editor-wrapper（getScrollParent 依赖这一点）
 }
 
 .source-editor {
