@@ -13,7 +13,15 @@ export default defineConfig({
   },
   server: {
     port: 5300,
-    open: true
+    open: true,
+    // 本地开发时 /api/*（认证/聊天记录/云端/AI 代理）转发到本机 server.cjs
+    // （node server.cjs 8080），否则 dev 下登录门禁无法工作
+    proxy: {
+      '/api': {
+        target: 'http://127.0.0.1:8080',
+        changeOrigin: true
+      }
+    }
   },
   optimizeDeps: {
     include: ['element-plus']

@@ -26,6 +26,28 @@
 
     <div class="statusbar-right">
       <span class="status-item">{{ stats.words }} 词</span>
+      <!-- 账号区：仅网页登录后渲染；桌面版 me 恒空不显示 -->
+      <template v-if="authStore.me">
+        <span class="status-divider"></span>
+        <span class="status-item account-name" :title="`已登录：${authStore.me.username}`">
+          <el-icon><User /></el-icon> {{ authStore.me.username }}
+        </span>
+        <span
+          v-if="authStore.me.role === 'admin'"
+          class="status-icon-btn"
+          title="用户管理"
+          @click="emit('toggleAdmin')"
+        >
+          <el-icon><UserFilled /></el-icon>
+        </span>
+        <span class="status-icon-btn" title="修改密码" @click="emit('togglePassword')">
+          <el-icon><Lock /></el-icon>
+        </span>
+        <span class="status-icon-btn" title="退出登录" @click="handleLogout">
+          <el-icon><SwitchButton /></el-icon>
+        </span>
+      </template>
+      <span class="status-divider"></span>
       <span class="status-icon-btn dev-entry" title="开发者模式 (F12)" @click="emit('toggleDev')">
         <el-icon><Tools /></el-icon>
       </span>
@@ -35,7 +57,8 @@
 
 <script setup lang="ts">
 import { useDocumentStore } from '@/stores/document'
-import { Tools, ArrowLeft, ArrowRight } from '@element-plus/icons-vue'
+import { useAuthStore } from '@/stores/auth'
+import { Tools, ArrowLeft, ArrowRight, User, UserFilled, Lock, SwitchButton } from '@element-plus/icons-vue'
 
 defineProps<{
   stats: {
@@ -47,9 +70,18 @@ defineProps<{
 
 const emit = defineEmits<{
   (e: 'toggleDev'): void
+  (e: 'toggleAdmin'): void
+  (e: 'togglePassword'): void
 }>()
 
 const docStore = useDocumentStore()
+const authStore = useAuthStore()
+
+// 退出登录：整页 reload，清掉内存里的一切用户态（文档/对话），避免共享浏览器串号
+async function handleLogout() {
+  await authStore.logout()
+  window.location.reload()
+}
 </script>
 
 <style lang="scss" scoped>
@@ -78,6 +110,14 @@ const docStore = useDocumentStore()
     align-items: center;
     gap: 4px;
     padding: 0 4px;
+
+    &.account-name {
+      color: var(--text-secondary);
+      max-width: 160px;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
   }
 
   .status-icon-btn {

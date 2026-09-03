@@ -1,5 +1,7 @@
 <template>
-  <div class="app-container">
+  <!-- 整站登录门禁(仅网页版;桌面版 authNeeded() 为 false,永远走 else 分支) -->
+  <LoginGate v-if="needAuth && !authStore.me" />
+  <div v-else class="app-container">
     <Toolbar
       @action="handleEditorAction"
       @export="handleExport"
@@ -29,13 +31,20 @@
           />
         </div>
 
-        <Statusbar :stats="stats" @toggle-dev="devVisible = true" />
+        <Statusbar
+          :stats="stats"
+          @toggle-dev="devVisible = true"
+          @toggle-admin="adminVisible = true"
+          @toggle-password="pwVisible = true"
+        />
       </div>
       <AIPanel v-if="aiPanelAlive" :visible="aiStore.panelVisible" :editor="editorRef" />
     </div>
 
     <DevPanel v-model:visible="devVisible" />
     <CloudFiles :visible="cloudVisible" @close="cloudVisible = false" />
+    <AdminUsers :visible="adminVisible" @close="adminVisible = false" />
+    <PasswordDialog :visible="pwVisible" @close="pwVisible = false" />
   </div>
 </template>
 
@@ -54,14 +63,19 @@ import Statusbar from './components/Statusbar.vue'
 import SearchPanel from './components/SearchPanel.vue'
 import DevPanel from './components/DevPanel.vue'
 import CloudFiles from './components/CloudFiles.vue'
+import LoginGate from './components/LoginGate.vue'
+import AdminUsers from './components/AdminUsers.vue'
+import PasswordDialog from './components/PasswordDialog.vue'
 // AI 面板默认隐藏：异步组件 + 首次打开才挂载，把 lottie-web / 动画 JSON 移出首屏启动路径
 const AIPanel = defineAsyncComponent(() => import('./components/AIPanel.vue'))
 import type { OutlineItem } from '@/utils/markdown'
 import { ElMessage } from 'element-plus'
 import { useAIStore } from '@/stores/ai'
+import { useAuthStore, authNeeded } from '@/stores/auth'
 
 const docStore = useDocumentStore()
 const aiStore = useAIStore()
+const authStore = useAuthStore()
 
 const editorRef = ref<InstanceType<typeof Editor>>()
 const editorWrapperRef = ref<HTMLElement>()
@@ -71,6 +85,11 @@ const stats = ref({ characters: 0, words: 0, lines: 0 })
 const searchVisible = ref(false)
 const devVisible = ref(false)
 const cloudVisible = ref(false)
+const adminVisible = ref(false)
+const pwVisible = ref(false)
+
+// 登录门禁只作用于网页版；桌面版恒 false
+const needAuth = authNeeded()
 
 // AI 面板首次可见后才挂载（之后保持存活以保留收起/展开动画）；
 // 面板状态持久化在 aiStore，若上次启动时面板是打开的，启动时即加载
@@ -166,6 +185,23 @@ onMounted(() => {
   setupTauriCompat()
   devLog.info(`Hypora 启动, 运行环境: ${isElectron() ? (tauriAPI.isTauri() ? 'Tauri桌面版' : 'Electron桌面版') : 'Web浏览器'}`)
 
+  // 登录门禁：网页版先确认会话再挂编辑器（共享浏览器的 localStorage 草稿
+  // 不能在确认身份前渲染给任何人）；桌面版无门禁，直接引导
+  if (needAuth) {
+    authStore.init()
+    authStore.readyPromise.then((me) => { if (me) bootstrapEditor() })
+  } else {
+    bootstrapEditor()
+  }
+})
+
+// 编辑器引导（幂等）：确认登录后（或桌面版）才执行。
+// 顺序敏感：必须先有身份，再 docStore.init()/aiStore.init()
+let booted = false
+function bootstrapEditor() {
+  if (booted) return
+  booted = true
+
   docStore.init()
   aiStore.init()
 
@@ -258,7 +294,7 @@ onMounted(() => {
 
     activeHeading.value = activeId
   })
-})
+}
 
 // 处理编辑器动作
 function handleEditorAction(action: string) {

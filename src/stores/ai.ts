@@ -1,6 +1,8 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { streamChat, testConnection as testConn, type ChatMessage, type ContentPart } from '@/utils/deepseek'
+import { useAuthStore, authNeeded } from '@/stores/auth'
+import { chatGet, chatPut, chatDelete, type ChatPayload } from '@/utils/authApi'
 
 // 预填的默认 key（用户可在面板配置区修改，持久化到 localStorage）
 // 注意：真实 key 已从仓库移除（公开仓库不应含密钥）。首次使用请在配置区填写自己的 key。
@@ -45,6 +47,87 @@ export const useAIStore = defineStore('ai', () => {
   const pendingImages = ref<string[]>([])
   let controller: AbortController | null = null
 
+  // ===== 聊天记录按用户持久化（仅网页登录用户；桌面版/未登录不持久化） =====
+  const authStore = useAuthStore()
+  const chatRev = ref(0)
+  let chatSaveTimer: number | null = null
+  let chatSaving = false
+  let restoreDone = false
+
+  async function restoreChats() {
+    if (restoreDone) return
+    restoreDone = true
+    try {
+      const r = await chatGet()
+      // 仅本地为空时恢复，避免覆盖用户正在进行的对话
+      if (messages.value.length === 0 && Array.isArray(r.messages) && r.messages.length > 0) {
+        messages.value = r.messages as ChatMessage[]
+        reasonings.value = r.reasonings as string[]
+        chatRev.value = r.rev || 0
+      }
+    } catch (e: any) {
+      if (e?.status === 401) authStore.onUnauthorized()
+      // 其他错误静默：恢复失败不影响使用
+    }
+  }
+
+  // 服务端存档 2MB 上限的两级降级：
+  // 1) 多模态消息里的图片 data URL 换占位符（图已发给模型，存档不需要原图，单张可达 10MB）
+  // 2) 仍超限则只保留最近 40 条
+  const CHAT_SAVE_LIMIT = 2 * 1024 * 1024 - 16 * 1024
+  function payloadBytes(payload: ChatPayload) {
+    return new TextEncoder().encode(JSON.stringify(payload)).length
+  }
+  function stripImages(list: ChatMessage[]): ChatMessage[] {
+    return list.map((m) => {
+      if (!Array.isArray(m.content)) return m
+      return {
+        ...m,
+        content: m.content.map((p) =>
+          p.type === 'image_url' ? ({ type: 'image_url', image_url: { url: '[图片已省略]' } } as ContentPart) : p
+        ),
+      }
+    })
+  }
+  function trimForSave(): ChatPayload {
+    let list = messages.value.slice()
+    let reasons = reasonings.value.slice()
+    let payload: ChatPayload = { messages: list, reasonings: reasons }
+    if (payloadBytes(payload) <= CHAT_SAVE_LIMIT) return payload
+    list = stripImages(list)
+    payload = { messages: list, reasonings: reasons }
+    if (payloadBytes(payload) <= CHAT_SAVE_LIMIT) return payload
+    const cut = Math.max(0, list.length - 40)
+    return { messages: list.slice(cut), reasonings: reasons.slice(cut) }
+  }
+
+  function scheduleChatSave() {
+    if (!authNeeded() || !authStore.me) return
+    if (chatSaveTimer) clearTimeout(chatSaveTimer)
+    chatSaveTimer = window.setTimeout(() => { void saveChatsNow() }, 800)
+  }
+
+  async function saveChatsNow(): Promise<boolean> {
+    if (!authNeeded() || !authStore.me || chatSaving) return false
+    chatSaving = true
+    try {
+      try {
+        const r = await chatPut(trimForSave())
+        chatRev.value = r.rev
+        return true
+      } catch (e: any) {
+        if (e?.status === 401) {
+          // 会话过期：门禁浮现；内存对话保留，重新登录后下次发送会续传
+          authStore.onUnauthorized()
+        }
+        // 413/网络错误：静默，下次发送再试（trimForSave 已两级降级，413 理论少见）
+        return false
+      }
+    } finally {
+      chatSaving = false
+    }
+  }
+
   function init() {
     const k = localStorage.getItem('hypora_ai_apikey')
     apiKey.value = k || DEFAULT_KEY
@@ -65,6 +148,8 @@ export const useAIStore = defineStore('ai', () => {
     if (gm) glmModel.value = gm
     const pv = localStorage.getItem('hypora_ai_panel')
     panelVisible.value = pv === 'true'
+    // 登录用户从服务器恢复聊天记录（App 侧保证 init 在会话确认后才调用）
+    if (authNeeded() && authStore.me) void restoreChats()
   }
 
   function saveToLocal() {
@@ -123,6 +208,9 @@ export const useAIStore = defineStore('ai', () => {
     messages.value = []
     reasonings.value = []
     clearImages()
+    chatRev.value = 0
+    // 登录用户同步清空服务器存档
+    if (authNeeded() && authStore.me) void chatDelete().catch(() => {})
   }
 
   function stop() {
@@ -215,6 +303,8 @@ export const useAIStore = defineStore('ai', () => {
       loading.value = false
       controller = null
       if (hasImages) clearImages()
+      // 本轮对话已定格（含空回复/中止/出错分支），防抖保存到服务器
+      scheduleChatSave()
     }
   }
 
