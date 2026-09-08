@@ -1,0 +1,76 @@
+/* ============================================================
+   PDF 导出打印样式（仅 Electron printToPDF 路径使用）
+
+   原理：导出时把编辑区 DOM 克隆为 body 直属的 .hypora-print-root，
+   并在 <html> 上加 .hypora-printing。printToPDF 按 print 媒介渲染，
+   这里只保留克隆节点，工具栏/侧栏/AI 面板等全部隐藏，
+   由 Chromium 打印引擎排版分页 —— 产出矢量文本 PDF（可选中、体积小）。
+   ============================================================ */
+
+/* 屏幕态：克隆容器不可见，不影响正常布局 */
+.hypora-print-root {
+  display: none !important;
+}
+
+@media print {
+
+  /* 隐藏应用里除克隆容器外的一切（含 #app 本体） */
+  html.hypora-printing body > *:not(.hypora-print-root) {
+    display: none !important;
+  }
+
+  html.hypora-printing body {
+    display: block !important;
+    height: auto !important;
+    overflow: visible !important;
+    background: var(--bg-primary) !important;
+  }
+
+  html.hypora-printing .hypora-print-root {
+    display: block !important;
+  }
+
+  /* 克隆文档：脱离编辑器布局约束（滚动/限宽/内边距），按纸张宽度自然流式排版 */
+  .hypora-print-root .markdown-body {
+    display: block !important;
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    overflow: visible !important;
+    max-width: 100% !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    outline: none !important;
+    caret-color: transparent !important;
+
+    /* 保留主题背景色与代码块底色（printBackground 已开启，这里兜底） */
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+
+    /* 分页友好：标题不孤行、图片/表格行/引用不跨页截断；长代码块允许跨页 */
+    h1, h2, h3, h4, h5, h6 {
+      break-after: avoid-page;
+    }
+    img,
+    blockquote,
+    .mermaid,
+    tr {
+      break-inside: avoid;
+    }
+    pre,
+    .code-block-wrapper {
+      break-inside: auto;
+    }
+
+    /* 空标题/空段落不打印编辑器占位文案（"一级标题"等） */
+    h1:empty::before,
+    h2:empty::before,
+    h3:empty::before,
+    h4:empty::before,
+    h5:empty::before,
+    h6:empty::before,
+    p:empty::before {
+      content: none !important;
+    }
+  }
+}

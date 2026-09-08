@@ -11,6 +11,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   showSaveDialog: (defaultFilename) => ipcRenderer.invoke('save-dialog', defaultFilename),
   writeFile: (filePath, content) => ipcRenderer.invoke('write-file', filePath, content),
   writeBinaryFile: (filePath, base64) => ipcRenderer.invoke('write-binary-file', filePath, base64),
+  // 原生导出 PDF（printToPDF 矢量输出，主进程直接落盘）
+  printToPDF: (defaultFilename) => ipcRenderer.invoke('print-to-pdf', defaultFilename),
   openFileDialog: () => ipcRenderer.invoke('open-file-dialog'),
   registerFileAssociation: () => ipcRenderer.invoke('register-file-association'),
   unregisterFileAssociation: () => ipcRenderer.invoke('unregister-file-association'),

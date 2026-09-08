@@ -267,8 +267,15 @@ function createMenu() {
         { type: 'separator' },
         { label: '保存', accelerator: 'Ctrl+S', click: () => mainWindow.webContents.send('menu-action', 'save') },
         { label: '导出为Markdown', accelerator: 'Ctrl+Shift+S', click: () => mainWindow.webContents.send('menu-action', 'export-md') },
-        { label: '导出为HTML', click: () => mainWindow.webContents.send('menu-action', 'export-html') },
-        { label: '导出为PDF', click: () => mainWindow.webContents.send('menu-action', 'export-pdf') },
+        { type: 'separator' },
+        {
+          label: '导出',
+          submenu: [
+            { label: '导出为HTML', click: () => mainWindow.webContents.send('menu-action', 'export-html') },
+            { label: '导出为PDF', click: () => mainWindow.webContents.send('menu-action', 'export-pdf') },
+            { label: '导出为图片', click: () => mainWindow.webContents.send('menu-action', 'export-image') }
+          ]
+        },
         { type: 'separator' },
         { label: '退出', accelerator: 'Alt+F4', click: () => app.quit() }
       ]
@@ -544,6 +551,31 @@ ipcMain.handle('write-binary-file', async (event, filePath, base64) => {
     fs.writeFileSync(filePath, Buffer.from(base64, 'base64'))
     return { success: true }
   } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+
+// 原生导出 PDF：Chromium 打印引擎按打印 CSS（print.scss，只显示文档克隆）渲染矢量 PDF，
+// 由主进程直接落盘 —— 不经渲染进程 base64 往返，体积小（KB 级 vs 位图 PDF 的百 MB 级）、文字可选中。
+ipcMain.handle('print-to-pdf', async (event, defaultFilename) => {
+  try {
+    const buffer = await mainWindow.webContents.printToPDF({
+      printBackground: true,
+      pageSize: 'A4',
+      margins: { top: 0.4, bottom: 0.4, left: 0.4, right: 0.4 },
+      // 从标题层级生成 PDF 书签目录，长文档导航更方便
+      generateDocumentOutline: true
+    })
+    const result = await dialog.showSaveDialog(mainWindow, {
+      defaultPath: defaultFilename || 'document.pdf',
+      filters: [{ name: 'PDF文件', extensions: ['pdf'] }, { name: '所有文件', extensions: ['*'] }]
+    })
+    if (result.canceled || !result.filePath) return { canceled: true }
+    fs.writeFileSync(result.filePath, buffer)
+    appLog('INFO', `PDF 导出成功: ${result.filePath} (${(buffer.length / 1024).toFixed(0)}KB)`)
+    return { success: true, filePath: result.filePath }
+  } catch (err) {
+    appLog('ERROR', `PDF 导出失败: ${err.message}`)
     return { success: false, error: err.message }
   }
 })

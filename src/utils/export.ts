@@ -182,36 +182,71 @@ export async function exportHTML(content: string, title: string = 'Document', th
 
 // 导出PDF（Electron 用原生保存对话框，Web 用浏览器下载）
 export async function exportPDF(element: HTMLElement, filename: string = 'document'): Promise<boolean> {
+  // Electron：走原生 printToPDF —— Chromium 打印引擎按 A4 排版分页，输出矢量文本（可选中/可搜索），
+  // 打印 CSS（print.scss）只显示文档克隆，彻底避免 html2canvas 整档位图 → PNG 的体积爆炸（2MB md → 200MB+ PDF）。
+  const electronAPI = (window as any).electronAPI
+  if (electronAPI?.printToPDF) {
+    return withSignature(element, async () => {
+      const clone = preparePrintClone(element)
+      document.documentElement.classList.add('hypora-printing')
+      try {
+        const r = await electronAPI.printToPDF(`${filename}.pdf`)
+        if (r?.canceled) return false
+        if (!r?.success) throw new Error(r?.error || 'PDF 导出失败')
+        return true
+      } finally {
+        document.documentElement.classList.remove('hypora-printing')
+        clone.remove()
+      }
+    })
+  }
+
+  // 网页 / Tauri 回退：html2canvas 渲染后按 A4 切页，每页独立 JPEG（质量 0.9）压缩。
+  // 不再用「整档单张 PNG」：PNG 无损重编码图片极占体积，且超长文档会触发浏览器画布上限产生空白页。
   return withSignature(element, async () => {
     const [{ default: html2canvas }, { default: jsPDF }] = await Promise.all([import('html2canvas'), import('jspdf')])
-    const canvas = await html2canvas(element, {
-      scale: 2,
+    const bg = getComputedStyle(document.body).backgroundColor
+
+    const render = (s: number) => html2canvas(element, {
+      scale: s,
       useCORS: true,
       logging: false,
-      backgroundColor: getComputedStyle(document.body).backgroundColor
+      backgroundColor: bg
     })
 
-    const imgData = canvas.toDataURL('image/png')
-    const pdf = new jsPDF('p', 'mm', 'a4')
-    const imgWidth = 210
-    const pageHeight = 297
-    const imgHeight = (canvas.height * imgWidth) / canvas.width
-    let heightLeft = imgHeight
-    let position = 0
-
-    pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight)
-    heightLeft -= pageHeight
-
-    while (heightLeft >= 0) {
-      position = heightLeft - imgHeight
-      pdf.addPage()
-      pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight)
-      heightLeft -= pageHeight
+    // 画布面积超限时逐步降采样重渲（浏览器画布面积上限，超限会得到空白/损坏图）
+    let scale = 2
+    let canvas = await render(scale)
+    const MAX_PIXELS = 2 ** 26 // 67M 像素安全上限
+    while (canvas.width * canvas.height > MAX_PIXELS && scale > 0.75) {
+      scale = Math.max(0.75, scale - 0.25)
+      canvas = await render(scale)
     }
 
-    const electronAPI = (window as any).electronAPI
-    if (electronAPI?.showSaveDialog && electronAPI?.writeBinaryFile) {
-      const result = await electronAPI.showSaveDialog(`${filename}.pdf`)
+    const pdf = new jsPDF('p', 'mm', 'a4')
+    const pageHeightPx = Math.floor((canvas.width * 297) / 210) // 与 A4 等比的像素页高
+    const pageCount = Math.ceil(canvas.height / pageHeightPx)
+    const pageCanvas = document.createElement('canvas')
+
+    for (let i = 0; i < pageCount; i++) {
+      const srcY = i * pageHeightPx
+      const h = Math.min(pageHeightPx, canvas.height - srcY)
+      pageCanvas.width = canvas.width
+      pageCanvas.height = h
+      const ctx = pageCanvas.getContext('2d')
+      if (!ctx) continue
+      ctx.fillStyle = bg || '#ffffff'
+      ctx.fillRect(0, 0, pageCanvas.width, h)
+      ctx.drawImage(canvas, 0, srcY, canvas.width, h, 0, 0, canvas.width, h)
+      const imgData = pageCanvas.toDataURL('image/jpeg', 0.9)
+      const imgHeightMM = (h * 210) / canvas.width
+      if (i > 0) pdf.addPage()
+      pdf.addImage(imgData, 'JPEG', 0, 0, 210, imgHeightMM)
+    }
+
+    const electronAPI2 = (window as any).electronAPI
+    if (electronAPI2?.showSaveDialog && electronAPI2?.writeBinaryFile) {
+      const result = await electronAPI2.showSaveDialog(`${filename}.pdf`)
       if (!result || result.canceled || !result.filePath) return false
       // jsPDF output arraybuffer → base64
       // 注意：不能用 String.fromCharCode(...bytes) 一次性展开 —— 大数组（几十万字节）
@@ -225,12 +260,32 @@ export async function exportPDF(element: HTMLElement, filename: string = 'docume
         binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK))
       }
       const base64 = btoa(binary)
-      const r = await electronAPI.writeBinaryFile(result.filePath, base64)
+      const r = await electronAPI2.writeBinaryFile(result.filePath, base64)
       return !!(r && r.success)
     }
     pdf.save(`${filename}.pdf`)
     return true
   })
+}
+
+// 导出 PDF 前：克隆编辑区 DOM 为 body 直属的打印容器。
+// markdown-body 全部内容样式是全局的（themes/index.scss），克隆挂到 body 下依然完整生效；
+// 同时剥离编辑器痕迹（复制按钮、contenteditable），空标题/空段落的占位文案由 print.scss 抑制。
+function preparePrintClone(el: HTMLElement): HTMLElement {
+  const clone = el.cloneNode(true) as HTMLElement
+  clone.querySelectorAll('.code-copy-btn').forEach((n) => n.remove())
+  clone.querySelectorAll('[contenteditable]').forEach((n) => n.removeAttribute('contenteditable'))
+  // 剥离编辑态：专注模式会把非焦点段落压暗（opacity 0.3），打字机/搜索高亮同理不应进入 PDF
+  clone.classList.remove('focus-mode', 'typewriter-mode')
+  clone.querySelectorAll('.search-hit').forEach((n) => {
+    const parent = n.parentNode
+    if (parent) parent.replaceChild(document.createTextNode(n.textContent || ''), n)
+  })
+  const root = document.createElement('div')
+  root.className = 'hypora-print-root'
+  root.appendChild(clone)
+  document.body.appendChild(root)
+  return root
 }
 
 // 导出图片（Electron 用原生保存对话框，Web 用浏览器下载）

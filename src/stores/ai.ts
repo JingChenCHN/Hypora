@@ -27,7 +27,7 @@ export const AI_PRESETS: Record<string, string> = {
   summarize: '请用简洁的要点总结下面这段文字，输出 Markdown 无序列表：'
 }
 
-// 一段对话（会话）。登录用户整表持久化到服务器 /api/chats。
+// 一段对话（会话）。登录用户整表持久化到服务器 /api/chats；桌面版/未登录落到 localStorage。
 export interface ChatSession {
   id: string
   title: string
@@ -56,7 +56,7 @@ export const useAIStore = defineStore('ai', () => {
   let controller: AbortController | null = null
 
   // ===== 多会话（对话记录）=====
-  // 每个会话独立的消息/思考链；登录用户整表持久化到服务器，桌面版仅内存。
+  // 每个会话独立的消息/思考链；登录用户整表持久化到服务器，桌面版持久化到 localStorage。
   const chats = ref<ChatSession[]>([])
   const activeChatId = ref('')
   const activeChat = computed<ChatSession | null>(() =>
@@ -149,40 +149,56 @@ export const useAIStore = defineStore('ai', () => {
     scheduleChatSave()
   }
 
-  // ===== 聊天记录按用户持久化（仅网页登录用户；桌面版/未登录不持久化） =====
+  // ===== 聊天记录持久化（网页登录用户整表上云；桌面版/未登录落 localStorage） =====
   const authStore = useAuthStore()
   let chatSaveTimer: number | null = null
   let chatSaving = false
   let restoreDone = false
 
+  // 套用恢复的整表会话（仅当前无会话时生效，避免覆盖用户正在进行的对话）
+  function applyRestored(r: ChatPayload) {
+    if (chats.value.length > 0 || !Array.isArray(r.chats) || r.chats.length === 0) return
+    chats.value = r.chats.map((c) => ({
+      id: c.id, title: c.title || '',
+      createdAt: c.createdAt || Date.now(), updatedAt: c.updatedAt || Date.now(),
+      messages: c.messages as ChatMessage[], reasonings: (c.reasonings as string[]) || [],
+    }))
+    activeChatId.value = r.activeId && chats.value.some((c) => c.id === r.activeId)
+      ? r.activeId
+      : chats.value[chats.value.length - 1].id // 默认落在最近的会话
+  }
+
   async function restoreChats() {
     if (restoreDone) return
     restoreDone = true
     try {
-      const r = await chatGet()
-      // 仅本地无会话时恢复，避免覆盖用户正在进行的对话
-      if (chats.value.length === 0 && Array.isArray(r.chats) && r.chats.length > 0) {
-        chats.value = r.chats.map((c) => ({
-          id: c.id, title: c.title || '',
-          createdAt: c.createdAt || Date.now(), updatedAt: c.updatedAt || Date.now(),
-          messages: c.messages as ChatMessage[], reasonings: (c.reasonings as string[]) || [],
-        }))
-        activeChatId.value = r.activeId && chats.value.some((c) => c.id === r.activeId)
-          ? r.activeId
-          : chats.value[chats.value.length - 1].id // 默认落在最近的会话
-      }
+      applyRestored(await chatGet())
     } catch (e: any) {
       if (e?.status === 401) authStore.onUnauthorized()
       // 其他错误静默：恢复失败不影响使用
     }
   }
 
-  // 服务端存档 8MB 上限的逐级降级：
+  // 桌面版/未登录：localStorage 恢复（重启后不丢会话）
+  function restoreChatsLocal() {
+    if (restoreDone) return
+    restoreDone = true
+    try {
+      const raw = localStorage.getItem(CHAT_LOCAL_KEY)
+      if (!raw) return
+      applyRestored(JSON.parse(raw) as ChatPayload)
+    } catch { /* 解析失败静默 */ }
+  }
+
+  // 存档上限的逐级降级（服务端 8MB；localStorage 共享 ~5MB 配额且需给文档留余量，取 2MB）：
   // 1) 多模态消息里的图片 data URL 换占位符（图已发给模型，存档不需要原图，单张可达 10MB）
   // 2) 仍超限则每个会话只保留最近 40 条
   // 3) 仍超限则从最旧开始丢弃整个会话（活动会话除外）
   // 4) 单会话仍超限则从最旧消息开始裁
   const CHAT_SAVE_LIMIT = 8 * 1024 * 1024 - 64 * 1024
+  const CHAT_LOCAL_LIMIT = 2 * 1024 * 1024
+  // 桌面版/未登录的会话存档键
+  const CHAT_LOCAL_KEY = 'hypora_ai_chats'
   function payloadBytes(payload: ChatPayload) {
     return new TextEncoder().encode(JSON.stringify(payload)).length
   }
@@ -200,14 +216,14 @@ export const useAIStore = defineStore('ai', () => {
   function makePayload(list: ChatSession[]): ChatPayload {
     return { activeId: activeChatId.value, chats: list as ChatPayload['chats'] }
   }
-  function trimForSave(): ChatPayload {
+  function trimForSave(limitBytes: number = CHAT_SAVE_LIMIT): ChatPayload {
     let list = chats.value.slice()
     let payload = makePayload(list)
-    if (payloadBytes(payload) <= CHAT_SAVE_LIMIT) return payload
+    if (payloadBytes(payload) <= limitBytes) return payload
 
     list = list.map((c) => ({ ...c, messages: stripImages(c.messages) }))
     payload = makePayload(list)
-    if (payloadBytes(payload) <= CHAT_SAVE_LIMIT) return payload
+    if (payloadBytes(payload) <= limitBytes) return payload
 
     list = list.map((c) => ({
       ...c,
@@ -215,19 +231,19 @@ export const useAIStore = defineStore('ai', () => {
       reasonings: (c.reasonings || []).slice(-40),
     }))
     payload = makePayload(list)
-    if (payloadBytes(payload) <= CHAT_SAVE_LIMIT) return payload
+    if (payloadBytes(payload) <= limitBytes) return payload
 
     // 从最旧开始丢整个会话，活动会话永远保留
     const sorted = [...list].sort((a, b) => a.updatedAt - b.updatedAt)
     const keepId = activeChatId.value
-    while (sorted.length > 1 && payloadBytes(makePayload(sorted)) > CHAT_SAVE_LIMIT) {
+    while (sorted.length > 1 && payloadBytes(makePayload(sorted)) > limitBytes) {
       const victim = sorted.findIndex((c) => c.id !== keepId)
       if (victim === -1) break
       sorted.splice(victim, 1)
     }
     // 最后兜底：单会话内从最旧消息开始裁（至少保留 1 条）
     let tail = sorted
-    while (tail.length && payloadBytes(makePayload(tail)) > CHAT_SAVE_LIMIT && tail[0].messages.length > 1) {
+    while (tail.length && payloadBytes(makePayload(tail)) > limitBytes && tail[0].messages.length > 1) {
       tail = tail.map((c, i) => i === 0
         ? { ...c, messages: c.messages.slice(1), reasonings: (c.reasonings || []).slice(1) }
         : c)
@@ -236,9 +252,19 @@ export const useAIStore = defineStore('ai', () => {
   }
 
   function scheduleChatSave() {
-    if (!authNeeded() || !authStore.me) return
+    // 登录网页版：防抖后整表上云；桌面版/未登录：落 localStorage（重启不丢会话）
     if (chatSaveTimer) clearTimeout(chatSaveTimer)
-    chatSaveTimer = window.setTimeout(() => { void saveChatsNow() }, 800)
+    chatSaveTimer = window.setTimeout(
+      authNeeded() && authStore.me ? () => { void saveChatsNow() } : saveChatsLocal,
+      800
+    )
+  }
+
+  // 桌面版/未登录：整表落到 localStorage（配额溢出静默，不影响使用）
+  function saveChatsLocal() {
+    try {
+      localStorage.setItem(CHAT_LOCAL_KEY, JSON.stringify(trimForSave(CHAT_LOCAL_LIMIT)))
+    } catch { /* 配额溢出：静默 */ }
   }
 
   async function saveChatsNow(): Promise<boolean> {
@@ -283,9 +309,12 @@ export const useAIStore = defineStore('ai', () => {
     const pv = localStorage.getItem('hypora_ai_panel')
     panelVisible.value = pv === 'true'
     // 登录用户从服务器恢复多会话记录（App 侧保证 init 在会话确认后才调用）；
-    // 桌面版/未登录仅内存，先备好一个空会话
+    // 桌面版/未登录从 localStorage 恢复（重启不丢会话），无存档时先备好一个空会话
     if (authNeeded() && authStore.me) void restoreChats()
-    else ensureActiveChat()
+    else {
+      restoreChatsLocal()
+      ensureActiveChat()
+    }
   }
 
   function saveToLocal() {

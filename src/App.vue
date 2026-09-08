@@ -272,6 +272,9 @@ function bootstrapEditor() {
         case 'export-pdf':
           handleExport('pdf')
           break
+        case 'export-image':
+          handleExport('image')
+          break
         case 'toggle-source':
           docStore.toggleSourceMode()
           break
