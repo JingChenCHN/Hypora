@@ -31,6 +31,9 @@
                 <div class="menu-item" @click="runFileCommand('cloudFiles')">
                   <el-icon><Files /></el-icon>从云端打开
                 </div>
+                <div class="menu-item" @click="runFileCommand('backupFiles')">
+                  <el-icon><Box /></el-icon>从备份（离线缓存）中打开
+                </div>
               </div>
             </div>
 
@@ -265,7 +268,7 @@ import { useAIStore } from '@/stores/ai'
 import {
   Document, ArrowDown, ArrowRight, DocumentAdd, FolderOpened, Download, DocumentCopy, Files, Picture, PictureFilled,
   Postcard, MagicStick, Grid, ChatDotSquare, List, Select, Link, Minus, Top,
-  Search, Sunny, Moon, Coffee, Brush, Pouring, Menu, FullScreen, Cloudy, Upload
+  Search, Sunny, Moon, Coffee, Brush, Pouring, Menu, FullScreen, Cloudy, Upload, Box
 } from '@element-plus/icons-vue'
 import { readMdFile } from '@/utils/export'
 import TrafficLights from './TrafficLights.vue'
@@ -373,6 +376,9 @@ function handleFileCommand(command: string) {
       break
     case 'cloudFiles':
       emit('export', 'cloudFiles')
+      break
+    case 'backupFiles':
+      emit('export', 'backupFiles')
       break
     case 'exportHtml':
       emit('export', 'html')
@@ -482,7 +488,7 @@ async function handleOpenFile(e: Event) {
       background: var(--bg-primary);
       border: 1px solid var(--border-color);
       border-radius: 2px;
-      box-shadow: var(--shadow);
+      box-shadow: var(--shadow-overlay);
       z-index: 210;
     }
 
@@ -532,7 +538,7 @@ async function handleOpenFile(e: Event) {
         background: var(--bg-primary);
         border: 1px solid var(--border-color);
         border-radius: 2px;
-        box-shadow: var(--shadow);
+        box-shadow: var(--shadow-overlay);
         opacity: 0;
         visibility: hidden;
         transition: opacity 0.18s ease, visibility 0.18s ease;

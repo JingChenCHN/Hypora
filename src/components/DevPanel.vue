@@ -379,11 +379,11 @@ import { ElMessage } from 'element-plus'
     color: var(--text-primary);
   }
 
-  &.log-error .log-level { color: #f56c6c; }
-  &.log-error .log-message { color: #f56c6c; }
-  &.log-warn .log-level { color: #e6a23c; }
+  &.log-error .log-level { color: var(--el-color-danger); }
+  &.log-error .log-message { color: var(--el-color-danger); }
+  &.log-warn .log-level { color: var(--el-color-warning); }
   &.log-info .log-level { color: var(--accent-color); }
-  &.log-debug .log-level { color: #909399; }
+  &.log-debug .log-level { color: var(--el-color-info); }
 }
 
 .log-empty {

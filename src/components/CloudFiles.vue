@@ -120,7 +120,7 @@ async function del(name: string) {
   width: 100%;
 }
 .cloud-title {
-  font-family: "Georgia", "Songti SC", serif;
+  font-family: var(--font-serif);
   font-size: 16px;
   color: var(--text-primary);
 }

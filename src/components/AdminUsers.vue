@@ -201,7 +201,7 @@ function formatBytes(n: number) {
   gap: 10px;
 
   .admin-title {
-    font-family: Georgia, 'Songti SC', 'Source Han Serif SC', serif;
+    font-family: var(--font-serif);
     font-size: 16px;
     color: var(--text-primary);
   }
@@ -254,7 +254,7 @@ function formatBytes(n: number) {
     }
 
     .one-time-pw {
-      font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+      font-family: var(--font-mono);
       font-size: 13px;
       color: var(--text-primary);
       background: var(--bg-primary);

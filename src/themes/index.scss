@@ -169,6 +169,79 @@
   --el-color-primary-dark-2: #152e3b;
 }
 
+/* —— 浮层阴影 token（Shadow Vocabulary：菜单 / 弹层 / 悬浮件；常态卡片无阴影）—— */
+:root, [data-theme="light"] { --shadow-overlay: 0 4px 16px rgba(0, 0, 0, 0.08); }
+[data-theme="beige"] { --shadow-overlay: 0 4px 16px rgba(59, 59, 59, 0.10); }
+[data-theme="gray"]  { --shadow-overlay: 0 4px 16px rgba(33, 37, 41, 0.08); }
+[data-theme="ice"]   { --shadow-overlay: 0 4px 16px rgba(26, 58, 74, 0.10); }
+[data-theme="dark"]  { --shadow-overlay: 0 4px 16px rgba(0, 0, 0, 0.45); }
+
+/* ============================================================
+   Element Plus 组件全面跟随主题：
+   - 弹层底色 / 文字 / 边框 / 填充 → 映射应用 token（toast、MessageBox、
+     dialog、下拉、tooltip、select 等在暗色下不再是白底）
+   - 语义色（成功/警告/危险/信息）→ 去饱和 muted 色，禁高饱和 accent
+   ============================================================ */
+:root {
+  --el-bg-color: var(--bg-primary);
+  --el-bg-color-overlay: var(--bg-primary);
+  --el-bg-color-page: var(--bg-secondary);
+  --el-text-color-primary: var(--text-primary);
+  --el-text-color-regular: var(--text-primary);
+  --el-text-color-secondary: var(--text-secondary);
+  --el-text-color-placeholder: var(--text-muted);
+  --el-text-color-disabled: var(--text-muted);
+  --el-border-color: var(--border-color);
+  --el-border-color-light: var(--border-color);
+  --el-border-color-lighter: var(--border-color);
+  --el-border-color-extra-light: var(--border-color);
+  --el-border-color-dark: var(--accent-hover);
+  --el-border-color-darker: var(--text-secondary);
+  --el-fill-color: var(--bg-secondary);
+  --el-fill-color-light: var(--bg-tertiary);
+  --el-fill-color-lighter: var(--bg-tertiary);
+  --el-fill-color-extra-light: var(--bg-tertiary);
+  --el-fill-color-dark: var(--bg-secondary);
+  --el-fill-color-darker: var(--bg-secondary);
+  --el-fill-color-blank: var(--bg-primary);
+  --el-disabled-bg-color: var(--bg-tertiary);
+  --el-disabled-border-color: var(--border-color);
+  --el-disabled-text-color: var(--text-muted);
+  --el-dialog-border-radius: 2px;
+
+  /* 语义色：浅色主题统一 muted（冷调低饱和，与墨阶同存不抢） */
+  --el-color-success: #6f8f6f;
+  --el-color-warning: #b3905e;
+  --el-color-danger: #b06a63;
+  --el-color-error: #b06a63;
+  --el-color-info: #8a8a85;
+}
+
+/* 暗色主题：语义色提亮到可读 */
+[data-theme="dark"] {
+  --el-color-success: #8fb08f;
+  --el-color-warning: #c9a96e;
+  --el-color-danger: #c5837b;
+  --el-color-error: #c5837b;
+  --el-color-info: #8a8884;
+  /* 墨底反白的对比色翻转（primary 按钮 / solid 标签文字） */
+  --el-color-white: #0e0e0d;
+  --el-color-black: #d9d7d2;
+}
+
+/* 语义色梯度：light-X 向弹层底色混合（随主题自适应），dark-2 向黑加深 */
+$hypora-semantic-colors: ('success', 'warning', 'danger', 'error', 'info');
+:root {
+  @each $name in $hypora-semantic-colors {
+    --el-color-#{$name}-light-3: color-mix(in srgb, var(--el-color-#{$name}) 70%, var(--el-bg-color));
+    --el-color-#{$name}-light-5: color-mix(in srgb, var(--el-color-#{$name}) 50%, var(--el-bg-color));
+    --el-color-#{$name}-light-7: color-mix(in srgb, var(--el-color-#{$name}) 30%, var(--el-bg-color));
+    --el-color-#{$name}-light-8: color-mix(in srgb, var(--el-color-#{$name}) 20%, var(--el-bg-color));
+    --el-color-#{$name}-light-9: color-mix(in srgb, var(--el-color-#{$name}) 10%, var(--el-bg-color));
+    --el-color-#{$name}-dark-2: color-mix(in srgb, var(--el-color-#{$name}) 80%, #000);
+  }
+}
+
 /* 应用主题变量 */
 body {
   background-color: var(--bg-primary);
@@ -354,18 +427,40 @@ body {
 .markdown-body td {
   border: 1px solid var(--table-border);
   padding: 8px 12px;
-  text-align: left;
+  /* 对齐由 mdToHtml 的内联 style（来自 |:-:| 语法）决定，此处不再强制 left */
 }
 .markdown-body th {
   background: var(--table-header-bg);
   font-weight: 500;
 }
 
-/* 分割线 */
+/* 分割线：多风格由语法决定（--- 细实线 / *** 虚线 / ___ 双实线 / --- dotted 点线
+   / --- thick 粗线 / --- wavy 波浪），全部墨阶 token，无彩色；
+   波浪线用 mask + 纯色底（data URI 里无法引用 CSS 变量，借 mask 让底色吃 token） */
 .markdown-body hr {
   border: none;
   border-top: 1px solid var(--border-color);
   margin: 24px 0;
+
+  &.hr-dashed {
+    border-top-style: dashed;
+  }
+  &.hr-dotted {
+    border-top-style: dotted;
+  }
+  &.hr-double {
+    border-top: 4px double var(--text-muted);
+  }
+  &.hr-thick {
+    border-top: 2px solid var(--text-muted);
+  }
+  &.hr-wavy {
+    border: none;
+    height: 8px;
+    background-color: var(--text-muted);
+    -webkit-mask: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='6'><path d='M0 3 Q3 0 6 3 T12 3' fill='none' stroke='black' stroke-width='1.2'/></svg>") repeat-x left center / 12px 6px;
+    mask: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='6'><path d='M0 3 Q3 0 6 3 T12 3' fill='none' stroke='black' stroke-width='1.2'/></svg>") repeat-x left center / 12px 6px;
+  }
 }
 
 /* 链接：墨色 + hover 下划线（站点 .dl-link 风格），弃橙 */
@@ -385,6 +480,29 @@ body {
   border-radius: 2px;
   margin: 16px 0;
   box-shadow: var(--shadow);
+  /* 双击进入预览（缩放/旋转），单击仍为光标定位 */
+  cursor: zoom-in;
+}
+
+/* 视频 / 音频：原生控件播放（![](x.mp4) 升级与原生 <video>/<audio> 均包裹为不可编辑块） */
+.markdown-body .media-wrapper {
+  display: block;
+  margin: 16px 0;
+  text-align: center;
+}
+.markdown-body .media-wrapper .md-media {
+  max-width: 100%;
+  border-radius: 2px;
+  background: var(--code-bg);
+  outline: none;
+}
+.markdown-body video.md-media {
+  width: 100%;
+  max-height: 520px;
+}
+.markdown-body audio.md-media {
+  width: 100%;
+  height: 44px;
 }
 
 /* 粗体 */
@@ -460,9 +578,9 @@ body {
 }
 .markdown-body .mermaid svg { max-width: 100%; }
 .mermaid-error {
-  color: #f56c6c;
+  color: var(--el-color-danger);
   padding: 16px;
-  background: rgba(245, 108, 108, 0.1);
+  background: color-mix(in srgb, var(--el-color-danger) 10%, transparent);
   border-radius: 2px;
   text-align: left;
 }

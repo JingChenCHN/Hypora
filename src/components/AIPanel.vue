@@ -10,8 +10,8 @@
               <el-icon><Setting /></el-icon>
             </el-button>
           </el-tooltip>
-          <el-tooltip content="清空对话" placement="bottom">
-            <el-button text class="header-btn" :disabled="aiStore.loading" @click="aiStore.clearMessages()">
+          <el-tooltip content="删除当前对话" placement="bottom">
+            <el-button text class="header-btn" :disabled="aiStore.loading" @click="clearCurrentChat">
               <el-icon><Delete /></el-icon>
             </el-button>
           </el-tooltip>
@@ -22,6 +22,62 @@
           </el-tooltip>
         </div>
       </div>
+
+      <!-- 会话栏：当前对话命名 + 新建 + 历史列表 -->
+      <div class="chat-bar">
+        <button class="chat-bar-btn" @click="showChatList = !showChatList">
+          <span class="chat-bar-title">{{ activeChatTitle }}</span>
+          <el-icon class="chat-caret" :class="{ open: showChatList }"><ArrowDown /></el-icon>
+        </button>
+        <el-tooltip content="新建对话" placement="bottom">
+          <button class="chat-bar-new" @click="handleNewChat">
+            <el-icon><Plus /></el-icon>
+          </button>
+        </el-tooltip>
+      </div>
+
+      <!-- 历史对话浮层 -->
+      <template v-if="showChatList">
+        <div class="chat-list-backdrop" @click="closeChatList"></div>
+        <div class="chat-list">
+          <div class="chat-list-head">
+            <span>历史对话</span>
+            <span class="chat-list-count">{{ aiStore.chats.length }}</span>
+          </div>
+          <div v-if="aiStore.chats.length === 0" class="chat-list-empty">暂无历史对话</div>
+          <div v-else class="chat-list-scroll">
+            <div
+              v-for="c in sortedChats"
+              :key="c.id"
+              class="chat-item"
+              :class="{ active: c.id === aiStore.activeChatId }"
+              @click="pickChat(c.id)"
+            >
+              <template v-if="editingId === c.id">
+                <input
+                  v-focus
+                  v-model="editingTitle"
+                  class="chat-rename-input"
+                  @keydown.enter.prevent="commitRename(c.id)"
+                  @keydown.esc.prevent="cancelRename"
+                  @blur="commitRename(c.id)"
+                  @click.stop
+                />
+              </template>
+              <template v-else>
+                <div class="chat-item-main" @dblclick="startRename(c)">
+                  <div class="chat-item-title">{{ c.title || '新对话' }}</div>
+                  <div class="chat-item-meta">{{ formatChatTime(c.updatedAt) }} · {{ c.messages.length }} 条</div>
+                </div>
+                <div class="chat-item-actions" @click.stop>
+                  <button class="chat-act" title="重命名" @click="startRename(c)"><el-icon><Edit /></el-icon></button>
+                  <button class="chat-act" title="删除" @click="removeChat(c)"><el-icon><Delete /></el-icon></button>
+                </div>
+              </template>
+            </div>
+          </div>
+        </div>
+      </template>
 
       <!-- 配置区 -->
       <div v-show="configVisible" class="ai-config">
@@ -192,18 +248,21 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue'
-import { Setting, Delete, Close, Picture } from '@element-plus/icons-vue'
+import { Setting, Delete, Close, Picture, Plus, ArrowDown, Edit } from '@element-plus/icons-vue'
 import { useAIStore, AI_PRESETS } from '@/stores/ai'
 import { useDocumentStore } from '@/stores/document'
 import { mdToHtml } from '@/utils/markdown'
 import { testChatCompletion } from '@/utils/deepseek'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import LottieLoading from './LottieLoading.vue'
 import assistantAnim from '@/assets/ai-assistant-bubble.json'
 import { aiLoadingAnimation } from '@/assets/aiLoading'
 
 const props = defineProps<{ visible: boolean; editor: any }>()
 const aiStore = useAIStore()
+
+// 重命名输入自动聚焦（script setup 局部指令）
+const vFocus = { mounted: (el: HTMLInputElement) => { el.focus(); el.select() } }
 
 // 跟随编辑区选区实时刷新的「引用」内容：editor.getSelectedText 已兼容失焦后回退 remember
 function readSelected() {
@@ -255,6 +314,102 @@ const glmConnOk = ref(false)
 
 const lastIdx = computed(() => aiStore.messages.length - 1)
 
+// ===== 会话列表（历史对话）=====
+const showChatList = ref(false)
+const editingId = ref('')
+const editingTitle = ref('')
+
+const activeChatTitle = computed(() => {
+  const c = aiStore.activeChat
+  if (c?.title) return c.title
+  return c && c.messages.length ? '未命名对话' : '新对话'
+})
+
+// 最近更新的会话排前面
+const sortedChats = computed(() => [...aiStore.chats].sort((a, b) => b.updatedAt - a.updatedAt))
+
+function closeChatList() {
+  showChatList.value = false
+  cancelRename()
+}
+
+function pickChat(id: string) {
+  if (editingId.value === id) return // 重命名中不触发切换
+  aiStore.switchChat(id)
+  closeChatList()
+  scrollToBottom()
+}
+
+function handleNewChat() {
+  aiStore.newChat()
+  closeChatList()
+  scrollToBottom()
+}
+
+function startRename(c: { id: string; title: string }) {
+  editingId.value = c.id
+  editingTitle.value = c.title
+}
+
+function cancelRename() {
+  editingId.value = ''
+  editingTitle.value = ''
+}
+
+function commitRename(id: string) {
+  if (editingId.value !== id) return
+  aiStore.renameChat(id, editingTitle.value)
+  cancelRename()
+}
+
+// 删除会话：空会话直接删，非空需确认
+async function removeChat(c: { id: string; title: string; messages: unknown[] }) {
+  if (c.messages.length) {
+    try {
+      await ElMessageBox.confirm(
+        `删除对话「${c.title || '未命名对话'}」？删除后无法恢复。`,
+        '删除对话',
+        { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' },
+      )
+    } catch { return }
+  }
+  if (aiStore.loading && c.id === aiStore.activeChatId) {
+    ElMessage.warning('AI 正在回复，请先停止')
+    return
+  }
+  aiStore.deleteChat(c.id)
+  scrollToBottom()
+}
+
+// 顶栏垃圾桶 = 删除当前对话
+async function clearCurrentChat() {
+  const c = aiStore.activeChat
+  if (c && c.messages.length) {
+    try {
+      await ElMessageBox.confirm(
+        `删除当前对话「${c.title || '未命名对话'}」？删除后无法恢复。`,
+        '删除对话',
+        { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' },
+      )
+    } catch { return }
+  }
+  aiStore.clearMessages()
+  scrollToBottom()
+}
+
+function formatChatTime(ts: number) {
+  if (!ts) return '—'
+  const date = new Date(ts)
+  const now = new Date()
+  const pad = (n: number) => String(n).padStart(2, '0')
+  if (date.toDateString() === now.toDateString()) {
+    return `${pad(date.getHours())}:${pad(date.getMinutes())}`
+  }
+  const days = Math.floor((now.getTime() - ts) / 86400000)
+  if (days < 7 && days >= 1) return `${days} 天前`
+  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+}
+
 // 每条助手消息思考链的展开状态（默认折叠，避免冗余思考抢占阅读焦点）
 const reasoningOpen = ref<Record<number, boolean>>({})
 function toggleReasoning(i: number) {
@@ -304,6 +459,7 @@ function scrollToBottom() {
 }
 watch(() => aiStore.messages.length, scrollToBottom)
 watch(() => aiStore.messages[aiStore.messages.length - 1]?.content, scrollToBottom)
+watch(() => aiStore.activeChatId, scrollToBottom)
 
 async function sendInput() {
   const text = input.value.trim()
@@ -413,6 +569,7 @@ function copyText(text: string) {
   flex-direction: column;
   background: var(--bg-secondary);
   border-left: 1px solid var(--border-color);
+  position: relative;
 }
 
 /* —— 顶部 —— */
@@ -444,6 +601,179 @@ function copyText(text: string) {
       background: var(--bg-tertiary);
     }
   }
+}
+
+/* —— 会话栏：当前对话命名 + 新建 —— */
+.chat-bar {
+  display: flex;
+  align-items: stretch;
+  gap: 1px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+}
+.chat-bar-btn {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-family: inherit;
+  border-radius: 2px;
+  transition: background 0.2s;
+
+  &:hover { background: var(--bg-tertiary); }
+}
+.chat-bar-title {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  font-size: 13px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chat-caret {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+  transition: transform 0.2s ease;
+  &.open { transform: rotate(180deg); }
+}
+.chat-bar-new {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  padding: 4px 10px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  border-radius: 2px;
+  transition: all 0.2s;
+
+  &:hover { color: var(--accent-color); background: var(--bg-tertiary); }
+}
+
+/* —— 历史对话浮层 —— */
+.chat-list-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+}
+.chat-list {
+  position: absolute;
+  z-index: 6;
+  top: 86px; /* 顶栏 + 会话栏下缘（两者高度固定） */
+  left: 10px;
+  right: 10px;
+  max-height: 55%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 2px;
+  box-shadow: var(--shadow-overlay);
+}
+.chat-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-color);
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.chat-list-count {
+  font-size: 11px;
+  letter-spacing: 0.05em;
+}
+.chat-list-empty {
+  padding: 24px 12px;
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+.chat-list-scroll {
+  overflow-y: auto;
+}
+.chat-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border-color);
+  transition: background 0.2s;
+
+  &:last-child { border-bottom: none; }
+  &:hover {
+    background: var(--bg-tertiary);
+    .chat-item-actions { opacity: 1; }
+  }
+  &.active {
+    background: var(--bg-tertiary);
+    box-shadow: inset 2px 0 0 var(--accent-color);
+
+    .chat-item-title { color: var(--accent-color); }
+  }
+}
+.chat-item-main {
+  flex: 1;
+  min-width: 0;
+}
+.chat-item-title {
+  font-size: 13px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chat-item-meta {
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+.chat-item-actions {
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+.chat-act {
+  display: flex;
+  align-items: center;
+  padding: 3px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 13px;
+  border-radius: 2px;
+  transition: all 0.2s;
+
+  &:hover { color: var(--accent-color); background: var(--bg-secondary); }
+}
+.chat-rename-input {
+  flex: 1;
+  min-width: 0;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--text-primary);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 2px;
+  padding: 3px 8px;
+  outline: none;
+
+  &:focus { border-color: var(--accent-color); }
 }
 
 /* —— 配置区 —— */
@@ -488,7 +818,7 @@ function copyText(text: string) {
     font-family: inherit;
     transition: all 0.2s;
     &.active {
-      color: #fff;
+      color: var(--bg-primary);
       background: var(--accent-color);
     }
     &:not(.active):hover {
@@ -595,7 +925,7 @@ function copyText(text: string) {
   :deep(h2),
   :deep(h3),
   :deep(h4) {
-    font-family: "Georgia", "Songti SC", "Source Han Serif SC", "Noto Serif SC", serif;
+    font-family: var(--font-serif);
     color: var(--text-primary);
     font-weight: 600;
     margin: 10px 0 5px;
@@ -621,11 +951,11 @@ function copyText(text: string) {
     font-size: 12.5px;
   }
   :deep(code) {
-    font-family: "JetBrains Mono", Consolas, monospace;
+    font-family: var(--font-mono);
     font-size: 12.5px;
   }
   :deep(blockquote) {
-    border-left: 3px solid var(--blockquote-border);
+    border-left: 2px solid var(--blockquote-border);
     padding-left: 10px;
     color: var(--text-muted);
     margin: 6px 0;
@@ -839,7 +1169,7 @@ function copyText(text: string) {
     text-align: center;
     cursor: pointer;
     padding: 0;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+    box-shadow: var(--shadow-overlay);
   }
 }
 /* 用户消息内的图片 */

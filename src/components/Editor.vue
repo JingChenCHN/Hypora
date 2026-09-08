@@ -14,6 +14,7 @@
       @dragover.prevent
       @keydown="handleKeydown"
       @click="handleClick"
+      @dblclick="handleDblClick"
       @focusout="handleFocusOut"
       @contextmenu.prevent="onContextMenu"
       v-html="renderedContent"
@@ -53,15 +54,19 @@
       @action="handleContextAction"
       @close="ctxVisible = false"
     />
+
+    <!-- 图片预览：双击图片打开（缩放/旋转/拖移） -->
+    <MediaViewer :visible="viewerVisible" :src="viewerSrc" :name="viewerName" @close="viewerVisible = false" />
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { useDocumentStore } from '@/stores/document'
-import { mdToHtml, renderMermaid, extractOutline, handleImagePaste, insertMarkdown, htmlToMd, highlightCodeElement } from '@/utils/markdown'
+import { mdToHtml, renderMermaid, extractOutline, handleImagePaste, insertMarkdown, htmlToMd, highlightCodeElement, normalizeMediaElements } from '@/utils/markdown'
 import type { OutlineItem } from '@/utils/markdown'
 import ContextMenu from './ContextMenu.vue'
+import MediaViewer from './MediaViewer.vue'
 
 const emit = defineEmits<{
   (e: 'outlineUpdate', outline: OutlineItem[]): void
@@ -74,6 +79,11 @@ const docStore = useDocumentStore()
 const containerRef = ref<HTMLElement>()
 const editorRef = ref<HTMLElement>()
 const textareaRef = ref<HTMLTextAreaElement>()
+
+// 图片预览（双击编辑区图片打开：缩放/旋转/拖移）
+const viewerVisible = ref(false)
+const viewerSrc = ref('')
+const viewerName = ref('')
 
 // 渲染后的HTML内容
 const renderedContent = ref('')
@@ -591,6 +601,8 @@ function renderContent(content: string) {
   nextTick(async () => {
     if (editorRef.value) {
       await renderMermaid(editorRef.value)
+      // 视频音频归一化：![](x.mp4) 升级为播放器，裸 <video>/<audio> 套不可编辑容器
+      normalizeMediaElements(editorRef.value)
       const outline = extractOutline(editorRef.value)
       emit('outlineUpdate', outline)
       // 重置 undo 历史：当前 DOM 作为初始快照
@@ -838,6 +850,18 @@ function deactivateCodeEdit(code: HTMLElement) {
   }
   emit('outlineUpdate', extractOutline(editorRef.value))
   updateStats()
+}
+
+// 双击图片打开预览（缩放/旋转/拖移）；视频/音频由原生控件播放，不响应
+function handleDblClick(e: MouseEvent) {
+  const t = e.target as HTMLElement
+  if (docStore.isSourceMode || t.tagName !== 'IMG') return
+  if (t.closest('.media-wrapper')) return
+  const src = t.getAttribute('src') || ''
+  if (!src) return
+  viewerSrc.value = src
+  viewerName.value = t.getAttribute('alt') || ''
+  viewerVisible.value = true
 }
 
 // focusout 事件委托：失焦的代码块退出编辑态
@@ -1406,7 +1430,7 @@ function handleKeydown(e: KeyboardEvent) {
     const fn = selection.focusNode
     if (an === fn && an && an.nodeType === Node.ELEMENT_NODE) {
       const el = an as HTMLElement
-      const wrapper = el.closest('.code-block-wrapper') || el.closest('.table-wrapper')
+      const wrapper = el.closest('.code-block-wrapper') || el.closest('.table-wrapper') || el.closest('.media-wrapper')
       if (wrapper && editorRef.value) {
         e.preventDefault()
         const p = document.createElement('p')
@@ -2300,6 +2324,8 @@ function insertTextAtCursor(text: string) {
   // AI 回复可能含 mermaid/gantt 代码块：insertHTML 不会自动触发图表渲染，需手动渲染。
   // 否则 .mermaid 元素停留在源码态（用户看不到图表）。已渲染过的块 data-processed 会跳过。
   renderMermaid(editorRef.value)
+  // AI 回复若含视频/音频（如 ![](x.mp4)），同样归一化为播放器
+  if (editorRef.value) normalizeMediaElements(editorRef.value)
 }
 
 // 替换当前选区为 AI 回复，并在替换后渲染可能插入的 mermaid 图表
@@ -2422,7 +2448,7 @@ onUnmounted(() => {
   background: var(--bg-primary);
   border: 1px solid var(--border-color);
   border-radius: 2px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  box-shadow: var(--shadow-overlay);
   padding: 6px;
   max-width: 240px;
 }

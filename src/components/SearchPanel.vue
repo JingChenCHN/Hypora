@@ -328,7 +328,7 @@ onBeforeUnmount(() => {
     background: var(--bg-primary);
     border: 1px solid var(--border-color);
     border-radius: 2px;
-    box-shadow: var(--shadow);
+    box-shadow: var(--shadow-overlay);
     padding: 12px;
     min-width: 400px;
 

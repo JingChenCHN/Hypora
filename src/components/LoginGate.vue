@@ -100,7 +100,7 @@ async function handleLogin() {
 
   .gate-title {
     margin: 0;
-    font-family: Georgia, 'Songti SC', 'Source Han Serif SC', 'Noto Serif SC', serif;
+    font-family: var(--font-serif);
     font-weight: 400;
     font-size: 30px;
     letter-spacing: -0.015em;

@@ -43,6 +43,7 @@
 
     <DevPanel v-model:visible="devVisible" />
     <CloudFiles :visible="cloudVisible" @close="cloudVisible = false" />
+    <BackupFiles :visible="backupVisible" @close="backupVisible = false" />
     <AdminUsers :visible="adminVisible" @close="adminVisible = false" />
     <PasswordDialog :visible="pwVisible" @close="pwVisible = false" />
   </div>
@@ -63,6 +64,7 @@ import Statusbar from './components/Statusbar.vue'
 import SearchPanel from './components/SearchPanel.vue'
 import DevPanel from './components/DevPanel.vue'
 import CloudFiles from './components/CloudFiles.vue'
+import BackupFiles from './components/BackupFiles.vue'
 import LoginGate from './components/LoginGate.vue'
 import AdminUsers from './components/AdminUsers.vue'
 import PasswordDialog from './components/PasswordDialog.vue'
@@ -85,6 +87,7 @@ const stats = ref({ characters: 0, words: 0, lines: 0 })
 const searchVisible = ref(false)
 const devVisible = ref(false)
 const cloudVisible = ref(false)
+const backupVisible = ref(false)
 const adminVisible = ref(false)
 const pwVisible = ref(false)
 
@@ -126,7 +129,7 @@ useShortcuts({
   'ctrl+shift+a': () => toggleAlwaysOnTop()
 })
 
-// 保存文档：有源文件路径则写回原文件，否则存本地缓存
+// 保存文档：有源文件路径则写回原文件；否则更新离线缓存并默认下载本地 .md 文件
 async function saveDocument() {
   const doc = docStore.activeDocument
   if (!doc) return
@@ -150,10 +153,23 @@ async function saveDocument() {
     return
   }
 
-  // 无源文件路径（新建文档）或 Web 端：保存到本地缓存
+  // 无源文件路径（新建文档）或 Web 端：更新离线缓存 + 默认下载 .md 到本机
   docStore.saveToLocal()
-  ElMessage.success('已保存到本地缓存')
-  devLog.info('保存到本地缓存')
+  const ok = await exportMarkdown(current.content, current.title || 'document')
+  if (ok) {
+    // 离线缓存可能因配额超限未写入（含大图），提示语如实反映
+    const uncached = docStore.unpersistedIds.has(current.id)
+    if (uncached) {
+      ElMessage.warning({ message: '浏览器缓存空间不足，.md 已下载（离线缓存未更新）', duration: 3000 })
+      devLog.warn('Ctrl+S 保存：离线缓存写入失败（配额），.md 已下载')
+    } else {
+      ElMessage.success({ message: '已保存并下载 .md 文件', duration: 2000 })
+      devLog.info('Ctrl+S 保存：缓存已更新 + .md 已下载')
+    }
+  } else {
+    ElMessage.info('已保存到缓存，下载已取消')
+    devLog.info('Ctrl+S 保存：缓存已更新，下载被用户取消')
+  }
 }
 
 // 窗口置顶切换（always-on-top，Ctrl+Shift+A）
@@ -352,6 +368,9 @@ async function handleExport(type: string) {
       }
       case 'cloudFiles':
         cloudVisible.value = true
+        return
+      case 'backupFiles':
+        backupVisible.value = true
         return
       case 'html':
         ok = await exportHTML(editorElement?.innerHTML || '', filename, docStore.currentTheme)

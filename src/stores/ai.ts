@@ -1,8 +1,8 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { streamChat, testConnection as testConn, type ChatMessage, type ContentPart } from '@/utils/deepseek'
 import { useAuthStore, authNeeded } from '@/stores/auth'
-import { chatGet, chatPut, chatDelete, type ChatPayload } from '@/utils/authApi'
+import { chatGet, chatPut, type ChatPayload } from '@/utils/authApi'
 
 // 预填的默认 key（用户可在面板配置区修改，持久化到 localStorage）
 // 注意：真实 key 已从仓库移除（公开仓库不应含密钥）。首次使用请在配置区填写自己的 key。
@@ -27,6 +27,18 @@ export const AI_PRESETS: Record<string, string> = {
   summarize: '请用简洁的要点总结下面这段文字，输出 Markdown 无序列表：'
 }
 
+// 一段对话（会话）。登录用户整表持久化到服务器 /api/chats。
+export interface ChatSession {
+  id: string
+  title: string
+  createdAt: number
+  updatedAt: number
+  messages: ChatMessage[]
+  reasonings: string[]
+  // 用户手动改过名后不再自动按首条消息重命名
+  manualTitle?: boolean
+}
+
 export const useAIStore = defineStore('ai', () => {
   const apiKey = ref(DEFAULT_KEY)
   const model = ref(DEFAULT_MODEL)
@@ -38,18 +50,107 @@ export const useAIStore = defineStore('ai', () => {
   const glmKey = ref(DEFAULT_GLM_KEY)
   const glmModel = ref(DEFAULT_GLM_MODEL)
   const panelVisible = ref(false)
-  const messages = ref<ChatMessage[]>([])
-  // 每条消息的思考链（reasoning_content）单独存放，与 .content 分离，避免污染正文。
-  // 长度与 messages 对齐；助手消息的思考链只在面板折叠展示，不随「插入/复制」进编辑器。
-  const reasonings = ref<string[]>([])
   const loading = ref(false)
   // 待发送的图片（base64 data URL），仅 GLM 识图模式使用，发送后清空
   const pendingImages = ref<string[]>([])
   let controller: AbortController | null = null
 
+  // ===== 多会话（对话记录）=====
+  // 每个会话独立的消息/思考链；登录用户整表持久化到服务器，桌面版仅内存。
+  const chats = ref<ChatSession[]>([])
+  const activeChatId = ref('')
+  const activeChat = computed<ChatSession | null>(() =>
+    chats.value.find((c) => c.id === activeChatId.value) || null
+  )
+
+  function newSession(): ChatSession {
+    return {
+      id: 'c' + Date.now().toString(36) + Math.floor(Math.random() * 46656).toString(36),
+      title: '',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      messages: [],
+      reasonings: [],
+    }
+  }
+
+  // 无活动会话时补一个（删除全部/首次使用时兜底）
+  function ensureActiveChat(): ChatSession {
+    let c = activeChat.value
+    if (!c) {
+      c = newSession()
+      chats.value.push(c)
+      activeChatId.value = c.id
+    }
+    return c
+  }
+
+  // 当前会话的消息与思考链（面板直接消费；无会话时空表）
+  const messages = computed<ChatMessage[]>(() => activeChat.value?.messages ?? [])
+  const reasonings = computed<string[]>(() => activeChat.value?.reasonings ?? [])
+
+  // 会话标题：优先取选中文本首行，否则取输入首行，截 24 字
+  function deriveTitle(prompt: string, ctx: { selection?: string; doc?: string }): string {
+    const src = (ctx.selection || '').split('\n').map((s) => s.trim()).find(Boolean)
+      || prompt.split('\n').map((s) => s.trim()).find(Boolean) || ''
+    if (!src) return ''
+    return src.slice(0, 24) + (src.length > 24 ? '…' : '')
+  }
+
+  // 消息内容取纯文本（多模态取 text 片段；用于恢复自动命名）
+  function asPlainText(content: ChatMessage['content'] | undefined): string {
+    if (typeof content === 'string') return content
+    if (!Array.isArray(content)) return ''
+    return content.filter((p) => p.type === 'text').map((p) => p.text || '').join(' ')
+  }
+
+  function newChat(): ChatSession {
+    // 当前会话还是空的：直接沿用，避免堆出一排「未命名」空会话
+    const cur = activeChat.value
+    if (cur && cur.messages.length === 0) return cur
+    const c = newSession()
+    chats.value.push(c)
+    activeChatId.value = c.id
+    scheduleChatSave()
+    return c
+  }
+
+  function switchChat(id: string) {
+    if (!chats.value.some((c) => c.id === id)) return
+    activeChatId.value = id
+    scheduleChatSave() // 记住活动会话
+  }
+
+  function deleteChat(id: string) {
+    if (loading.value && activeChatId.value === id) return // 生成中不可删当前会话
+    const idx = chats.value.findIndex((c) => c.id === id)
+    if (idx === -1) return
+    chats.value.splice(idx, 1)
+    if (activeChatId.value === id) {
+      const next = chats.value[Math.min(idx, chats.value.length - 1)]
+      if (next) activeChatId.value = next.id
+      else { const c = newSession(); chats.value.push(c); activeChatId.value = c.id }
+    }
+    scheduleChatSave()
+  }
+
+  function renameChat(id: string, title: string) {
+    const c = chats.value.find((x) => x.id === id)
+    if (!c) return
+    const t = title.trim()
+    if (t) {
+      c.title = t.slice(0, 60)
+      c.manualTitle = true
+    } else {
+      // 清空名称 → 恢复自动命名
+      c.title = c.messages.length ? deriveTitle(asPlainText(c.messages.find((m) => m.role === 'user')?.content), {}) : ''
+      c.manualTitle = false
+    }
+    scheduleChatSave()
+  }
+
   // ===== 聊天记录按用户持久化（仅网页登录用户；桌面版/未登录不持久化） =====
   const authStore = useAuthStore()
-  const chatRev = ref(0)
   let chatSaveTimer: number | null = null
   let chatSaving = false
   let restoreDone = false
@@ -59,11 +160,16 @@ export const useAIStore = defineStore('ai', () => {
     restoreDone = true
     try {
       const r = await chatGet()
-      // 仅本地为空时恢复，避免覆盖用户正在进行的对话
-      if (messages.value.length === 0 && Array.isArray(r.messages) && r.messages.length > 0) {
-        messages.value = r.messages as ChatMessage[]
-        reasonings.value = r.reasonings as string[]
-        chatRev.value = r.rev || 0
+      // 仅本地无会话时恢复，避免覆盖用户正在进行的对话
+      if (chats.value.length === 0 && Array.isArray(r.chats) && r.chats.length > 0) {
+        chats.value = r.chats.map((c) => ({
+          id: c.id, title: c.title || '',
+          createdAt: c.createdAt || Date.now(), updatedAt: c.updatedAt || Date.now(),
+          messages: c.messages as ChatMessage[], reasonings: (c.reasonings as string[]) || [],
+        }))
+        activeChatId.value = r.activeId && chats.value.some((c) => c.id === r.activeId)
+          ? r.activeId
+          : chats.value[chats.value.length - 1].id // 默认落在最近的会话
       }
     } catch (e: any) {
       if (e?.status === 401) authStore.onUnauthorized()
@@ -71,10 +177,12 @@ export const useAIStore = defineStore('ai', () => {
     }
   }
 
-  // 服务端存档 2MB 上限的两级降级：
+  // 服务端存档 8MB 上限的逐级降级：
   // 1) 多模态消息里的图片 data URL 换占位符（图已发给模型，存档不需要原图，单张可达 10MB）
-  // 2) 仍超限则只保留最近 40 条
-  const CHAT_SAVE_LIMIT = 2 * 1024 * 1024 - 16 * 1024
+  // 2) 仍超限则每个会话只保留最近 40 条
+  // 3) 仍超限则从最旧开始丢弃整个会话（活动会话除外）
+  // 4) 单会话仍超限则从最旧消息开始裁
+  const CHAT_SAVE_LIMIT = 8 * 1024 * 1024 - 64 * 1024
   function payloadBytes(payload: ChatPayload) {
     return new TextEncoder().encode(JSON.stringify(payload)).length
   }
@@ -89,16 +197,42 @@ export const useAIStore = defineStore('ai', () => {
       }
     })
   }
+  function makePayload(list: ChatSession[]): ChatPayload {
+    return { activeId: activeChatId.value, chats: list as ChatPayload['chats'] }
+  }
   function trimForSave(): ChatPayload {
-    let list = messages.value.slice()
-    let reasons = reasonings.value.slice()
-    let payload: ChatPayload = { messages: list, reasonings: reasons }
+    let list = chats.value.slice()
+    let payload = makePayload(list)
     if (payloadBytes(payload) <= CHAT_SAVE_LIMIT) return payload
-    list = stripImages(list)
-    payload = { messages: list, reasonings: reasons }
+
+    list = list.map((c) => ({ ...c, messages: stripImages(c.messages) }))
+    payload = makePayload(list)
     if (payloadBytes(payload) <= CHAT_SAVE_LIMIT) return payload
-    const cut = Math.max(0, list.length - 40)
-    return { messages: list.slice(cut), reasonings: reasons.slice(cut) }
+
+    list = list.map((c) => ({
+      ...c,
+      messages: c.messages.slice(-40),
+      reasonings: (c.reasonings || []).slice(-40),
+    }))
+    payload = makePayload(list)
+    if (payloadBytes(payload) <= CHAT_SAVE_LIMIT) return payload
+
+    // 从最旧开始丢整个会话，活动会话永远保留
+    const sorted = [...list].sort((a, b) => a.updatedAt - b.updatedAt)
+    const keepId = activeChatId.value
+    while (sorted.length > 1 && payloadBytes(makePayload(sorted)) > CHAT_SAVE_LIMIT) {
+      const victim = sorted.findIndex((c) => c.id !== keepId)
+      if (victim === -1) break
+      sorted.splice(victim, 1)
+    }
+    // 最后兜底：单会话内从最旧消息开始裁（至少保留 1 条）
+    let tail = sorted
+    while (tail.length && payloadBytes(makePayload(tail)) > CHAT_SAVE_LIMIT && tail[0].messages.length > 1) {
+      tail = tail.map((c, i) => i === 0
+        ? { ...c, messages: c.messages.slice(1), reasonings: (c.reasonings || []).slice(1) }
+        : c)
+    }
+    return makePayload(tail)
   }
 
   function scheduleChatSave() {
@@ -148,8 +282,10 @@ export const useAIStore = defineStore('ai', () => {
     if (gm) glmModel.value = gm
     const pv = localStorage.getItem('hypora_ai_panel')
     panelVisible.value = pv === 'true'
-    // 登录用户从服务器恢复聊天记录（App 侧保证 init 在会话确认后才调用）
+    // 登录用户从服务器恢复多会话记录（App 侧保证 init 在会话确认后才调用）；
+    // 桌面版/未登录仅内存，先备好一个空会话
     if (authNeeded() && authStore.me) void restoreChats()
+    else ensureActiveChat()
   }
 
   function saveToLocal() {
@@ -203,14 +339,11 @@ export const useAIStore = defineStore('ai', () => {
     saveToLocal()
   }
 
+  // 清空当前对话 = 删除当前会话，落到新会话（多会话语义；历史会话在列表里各自删除）
   function clearMessages() {
     if (loading.value) return
-    messages.value = []
-    reasonings.value = []
     clearImages()
-    chatRev.value = 0
-    // 登录用户同步清空服务器存档
-    if (authNeeded() && authStore.me) void chatDelete().catch(() => {})
+    deleteChat(activeChatId.value)
   }
 
   function stop() {
@@ -220,26 +353,28 @@ export const useAIStore = defineStore('ai', () => {
   }
 
   /**
-   * 发送一条消息。
+   * 发送一条消息（写入当前会话）。
    * @param prompt 用户输入或预设 prompt
    * @param ctx.selection 当前编辑器选中文本（选区操作时传入）
    * @param ctx.doc 当前整篇文档（”带入当前文档”时传入）
    */
   async function send(prompt: string, ctx: { selection?: string; doc?: string } = {}) {
     if (loading.value) return
+    const chat = ensureActiveChat()
+    // 流式期间捕获会话引用：用户中途切走，增量仍写回原会话
     const isLocal = provider.value === 'local'
     const isGlm = provider.value === 'glm'
     const hasImages = pendingImages.value.length > 0
 
     if (isGlm) {
       if (!glmKey.value.trim()) {
-        messages.value.push({ role: 'assistant', content: '⚠️ 请先在配置区填写 GLM API Key。' })
-        reasonings.value.push('')
+        chat.messages.push({ role: 'assistant', content: '⚠️ 请先在配置区填写 GLM API Key。' })
+        chat.reasonings.push('')
         return
       }
     } else if (!isLocal && !apiKey.value.trim()) {
-      messages.value.push({ role: 'assistant', content: '⚠️ 请先在配置区填写 API Key。' })
-      reasonings.value.push('')
+      chat.messages.push({ role: 'assistant', content: '⚠️ 请先在配置区填写 API Key。' })
+      chat.reasonings.push('')
       return
     }
 
@@ -259,11 +394,17 @@ export const useAIStore = defineStore('ai', () => {
       userContent = fullText
     }
 
-    messages.value.push({ role: 'user', content: userContent })
-    reasonings.value.push('')
-    messages.value.push({ role: 'assistant', content: '' })
-    reasonings.value.push('')
-    const aiIdx = messages.value.length - 1
+    chat.messages.push({ role: 'user', content: userContent })
+    chat.reasonings.push('')
+    chat.messages.push({ role: 'assistant', content: '' })
+    chat.reasonings.push('')
+    const aiIdx = chat.messages.length - 1
+
+    // 自动命名：未手动命名过时按选中文本/输入首行取标题
+    if (!chat.title && !chat.manualTitle) {
+      const t = deriveTitle(prompt, ctx)
+      if (t) chat.title = t
+    }
 
     loading.value = true
     controller = new AbortController()
@@ -274,7 +415,7 @@ export const useAIStore = defineStore('ai', () => {
         : '你是 Hypora 内置的 AI 写作助手。用户在 Markdown 编辑器中写作，你的回复使用 Markdown 格式，简洁实用。'
       const history: ChatMessage[] = [
         { role: 'system', content: sysContent },
-        ...messages.value.slice(0, aiIdx)
+        ...chat.messages.slice(0, aiIdx)
       ]
       await streamChat({
         baseUrl: baseUrl.value,
@@ -283,13 +424,13 @@ export const useAIStore = defineStore('ai', () => {
         messages: history,
         path: isGlm ? '/chat/completions' : undefined,
         thinking: !isLocal && !isGlm && thinking.value,
-        onChunk: (delta) => { messages.value[aiIdx].content += delta },
+        onChunk: (delta) => { chat.messages[aiIdx].content += delta },
         // 思考链单独收集，不混入正文（避免嵌入编辑器时带一堆冗余思考）
-        onReasoning: (delta) => { reasonings.value[aiIdx] += delta },
+        onReasoning: (delta) => { chat.reasonings[aiIdx] += delta },
         signal: controller.signal
       })
-      if (!messages.value[aiIdx].content) {
-        messages.value[aiIdx].content = '（空回复）'
+      if (!chat.messages[aiIdx].content) {
+        chat.messages[aiIdx].content = '（空回复）'
       }
     } catch (e: any) {
       if (e?.name === 'AbortError') {
@@ -297,12 +438,13 @@ export const useAIStore = defineStore('ai', () => {
       } else {
         const hint = isLocal ? '\n\n（请确认 local-ai-engine 已启动：运行 启动.bat，使 llama-server 运行于该地址）'
           : isGlm ? '\n\n（请确认 GLM API Key 有效，且网络可访问 open.bigmodel.cn）' : ''
-        messages.value[aiIdx].content += `\n\n⚠️ ${e?.message || e}${hint}`
+        chat.messages[aiIdx].content += `\n\n⚠️ ${e?.message || e}${hint}`
       }
     } finally {
       loading.value = false
       controller = null
       if (hasImages) clearImages()
+      chat.updatedAt = Date.now()
       // 本轮对话已定格（含空回复/中止/出错分支），防抖保存到服务器
       scheduleChatSave()
     }
@@ -310,6 +452,8 @@ export const useAIStore = defineStore('ai', () => {
 
   return {
     apiKey, model, thinking, provider, baseUrl, localModel, glmKey, glmModel, panelVisible, messages, reasonings, loading, pendingImages,
-    init, saveToLocal, setProvider, testConnection, togglePanel, clearMessages, stop, send, addImage, removeImage, clearImages
+    chats, activeChatId, activeChat,
+    init, saveToLocal, setProvider, testConnection, togglePanel, clearMessages, stop, send, addImage, removeImage, clearImages,
+    newChat, switchChat, deleteChat, renameChat
   }
 })

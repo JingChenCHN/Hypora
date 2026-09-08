@@ -118,6 +118,50 @@ renderer.listitem = function({ text, task, checked, tokens }: any) {
   return `<li>${content}</li>`
 }
 
+// 分割线（thematic break）多风格：由语法决定，全部走墨阶/发丝线 token，无彩色。
+//   ---  → 默认细实线（.markdown-body hr 默认样式）
+//   ***  → 虚线（hr-dashed）
+//   ___  → 双线（hr-double，书页式）
+// token.raw 即源码里的标记行（如 "***"、"__ _ _"），按含哪种字符归类；
+// 仅整行只有标记字符时 marked 才会产生 hr token，不会与 ***加粗***、___下划线___ 冲突。
+renderer.hr = function(token: any) {
+  const raw: string = token.raw || ''
+  if (raw.includes('*')) return '<hr class="hr-dashed">\n'
+  if (raw.includes('_')) return '<hr class="hr-double">\n'
+  return '<hr>\n'
+}
+
+// 关键词后缀分割线：`--- wavy` / `___ 双线` 等（标记行 + 空格 + 样式关键词）。
+// 内置 thematic break 只认纯标记行，带文字的行不会与之冲突；此扩展优先于内置解析。
+// 关键词支持中英文别名，未知关键词按默认实线渲染。
+const HR_STYLE_MAP: Record<string, string> = {
+  solid: '', 实线: '',
+  dashed: 'hr-dashed', 虚线: 'hr-dashed',
+  dotted: 'hr-dotted', 点线: 'hr-dotted',
+  double: 'hr-double', 双线: 'hr-double', 双实线: 'hr-double',
+  wavy: 'hr-wavy', 波浪: 'hr-wavy', 波浪线: 'hr-wavy',
+  thick: 'hr-thick', 粗线: 'hr-thick', 粗实线: 'hr-thick',
+}
+const HR_KEYWORD_RE = /^ {0,3}(?:-{3,}|\*{3,}|_{3,})[ \t]+([\w一-龥]+)[ \t]*(?:\n|$)/
+
+marked.use({
+  extensions: [{
+    name: 'styledHr',
+    level: 'block',
+    tokenizer(src: string) {
+      const m = HR_KEYWORD_RE.exec(src)
+      if (!m) return undefined
+      const cls = HR_STYLE_MAP[m[1]]
+      if (cls === undefined) return undefined // 未知关键词不拦截，走默认段落
+      return { type: 'styledHr', raw: m[0], style: m[1] }
+    },
+    renderer(token: any) {
+      const cls = HR_STYLE_MAP[token.style] || ''
+      return cls ? `<hr class="${cls}">\n` : '<hr>\n'
+    }
+  }]
+})
+
 // 表格、标题等其余元素使用 marked 默认渲染，避免 v18 签名不匹配导致 [object Object]
 
 
@@ -142,6 +186,25 @@ marked.use({
   }]
 })
 
+// ==高亮== 扩展（非 GFM 标准；序列化端 turndown 已有 mark→== 规则，渲染端补齐对等支持）
+marked.use({
+  extensions: [{
+    name: 'highlightMark',
+    level: 'inline',
+    start(src: string) { const i = src.indexOf('=='); return i > -1 ? i : undefined },
+    tokenizer(src: string) {
+      // 仅头部断言「== 后非空白」：避免把 "a == b"（等式）误判为高亮；
+      // 不加尾部断言，否则 "==高亮== 后跟空格" 这个最常见形态会被误杀
+      const m = /^==(?!\s)([^=\n]+?)==/.exec(src)
+      if (m && m[1].trim()) return { type: 'highlightMark', raw: m[0], text: m[1] }
+      return undefined
+    },
+    renderer(token: any) {
+      return `<mark>${token.text}</mark>`
+    }
+  }]
+})
+
 // Markdown转HTML（mermaid/math 代码块由 renderer.code 处理，无需占位符）
 export function mdToHtml(md: string): string {
   let html: string
@@ -151,6 +214,9 @@ export function mdToHtml(md: string): string {
     // [TOC] → 文档内可点击目录（占位，渲染后用 buildToc 填充）
     md = md.replace(/^\[TOC\]$/m, '<div class="toc-placeholder"></div>')
     html = marked.parse(md) as string
+    // 表格对齐：marked 输出 deprecated 的 align 属性，转成内联 style
+    // （否则会被主题 CSS 的 text-align:left 覆盖，|:-:| 失效；内联 style 也让导出 HTML/PDF 带对齐）
+    html = html.replace(/<(th|td)([^>]*)\salign="(left|center|right)"([^>]*)>/g, '<$1$2$4 style="text-align:$3">')
     // 给标题加 id（供 TOC 链接和大纲跳转）
     html = html.replace(/<h([1-6])([^>]*)>([\s\S]*?)<\/h\1>/g, (_m, lvl, attrs, text) => {
       if (/id=/.test(attrs)) return `<h${lvl}${attrs}>${text}</h${lvl}>`
@@ -231,6 +297,22 @@ turndown.addRule('strikethrough', {
   replacement: (content: string) => '~~' + content + '~~'
 })
 
+// 分割线样式回写：class → 对应语法标记（--- 实线 / *** 虚线 / ___ 双实线 / --- wavy 波浪
+// / --- dotted 点线 / --- thick 粗线），替换 turndown 默认 hr 规则（固定输出 ---，会抹平风格）
+turndown.remove(['hr'])
+turndown.addRule('hr', {
+  filter: 'hr',
+  replacement: (_: string, node: any) => {
+    const cls = node.getAttribute?.('class') || ''
+    if (cls.includes('hr-dashed')) return '\n\n***\n\n'
+    if (cls.includes('hr-double')) return '\n\n___\n\n'
+    if (cls.includes('hr-wavy')) return '\n\n--- wavy\n\n'
+    if (cls.includes('hr-dotted')) return '\n\n--- dotted\n\n'
+    if (cls.includes('hr-thick')) return '\n\n--- thick\n\n'
+    return '\n\n---\n\n'
+  }
+})
+
 // 数学公式块
 // 块级公式：从 KaTeX 的 annotation 提取原始 LaTeX，还原为 $$...$$
 turndown.addRule('mathBlock', {
@@ -276,6 +358,69 @@ turndown.addRule('footnotes', {
 turndown.addRule('toc', {
   filter: (node: any) => node.nodeName === 'DIV' && (node.classList.contains('toc') || node.classList.contains('toc-empty')),
   replacement: () => '[TOC]\n\n'
+})
+
+// ===== 媒体（视频/音频）=====
+// markdown 无原生视频语法，约定两种写法都支持：
+//   1) ![](movie.mp4)   —— 渲染成 img 后按扩展名升级为 <video>/<audio>
+//   2) 原生 HTML <video controls src="…"></video>
+// 编辑区内包裹为 .media-wrapper（contenteditable=false，原生控件播放）；
+// 序列化时还原为原始 HTML，源码模式与导出均可播放。
+
+const VIDEO_SRC_RE = /\.(mp4|webm|ogv|mov|m4v)(\?|#|$)/i
+const AUDIO_SRC_RE = /\.(mp3|wav|ogg|m4a|flac|aac)(\?|#|$)/i
+
+// 判断 src 的媒体类型（支持扩展名与 data: MIME 前缀）
+export function mediaKindOfSrc(src: string): 'video' | 'audio' | null {
+  if (/^data:video\//i.test(src) || VIDEO_SRC_RE.test(src)) return 'video'
+  if (/^data:audio\//i.test(src) || AUDIO_SRC_RE.test(src)) return 'audio'
+  return null
+}
+
+// 把 video/audio 元素序列化为可放回 markdown 的原始 HTML
+function mediaToHtml(el: Element): string {
+  const tag = el.nodeName.toLowerCase()
+  const src = (el.getAttribute('src') || '').replace(/"/g, '%22')
+  return `<${tag} controls src="${src}"></${tag}>`
+}
+
+// 渲染后归一化：img(媒体链接)→video/audio；裸 video/audio 套 .media-wrapper（不可编辑）
+export function normalizeMediaElements(root: HTMLElement): void {
+  root.querySelectorAll('img').forEach((img) => {
+    const kind = mediaKindOfSrc(img.getAttribute('src') || '')
+    if (!kind) return
+    const media = document.createElement(kind)
+    media.setAttribute('controls', '')
+    media.setAttribute('src', img.getAttribute('src') || '')
+    media.className = 'md-media'
+    const wrap = document.createElement('span')
+    wrap.className = 'media-wrapper'
+    wrap.setAttribute('contenteditable', 'false')
+    wrap.appendChild(media)
+    img.replaceWith(wrap)
+  })
+  root.querySelectorAll('video, audio').forEach((el) => {
+    if (el.closest('.media-wrapper')) return
+    el.classList.add('md-media')
+    const wrap = document.createElement('span')
+    wrap.className = 'media-wrapper'
+    wrap.setAttribute('contenteditable', 'false')
+    el.replaceWith(wrap)
+    wrap.appendChild(el)
+  })
+}
+
+// 序列化规则：媒体容器 / 裸媒体元素 → 原始 HTML（markdown 允许内嵌 HTML）
+turndown.addRule('mediaWrapper', {
+  filter: (node: any) => node.nodeName === 'SPAN' && node.classList.contains('media-wrapper'),
+  replacement: (_: string, node: any) => {
+    const el = node.querySelector('video, audio')
+    return el ? `\n\n${mediaToHtml(el)}\n\n` : ''
+  }
+})
+turndown.addRule('mediaElement', {
+  filter: (node: any) => node.nodeName === 'VIDEO' || node.nodeName === 'AUDIO',
+  replacement: (_: string, node: any) => `\n\n${mediaToHtml(node)}\n\n`
 })
 
 // Mermaid 图表（渲染后是 SVG，从 data-mermaid-source 还原源码，避免 SVG 污染）
@@ -425,16 +570,60 @@ export function copyCode(btn: HTMLElement) {
   })
 }
 
-// 处理图片粘贴
-export function handleImagePaste(file: File): Promise<string> {
+// 处理图片粘贴/上传/拖入（统一入口）：读为 data URL 并做文档级压缩。
+// 此前是裸 readAsDataURL —— 原样 base64，手机原图一张 3–8MB → 文档文本 ×1.37，
+// 单张即可撑爆浏览器 localStorage（~5MB），导致离线缓存 QuotaExceededError 刷屏。
+// 压缩策略：长边 ≤1920px 逐级降（1920→1440→1280→1024），JPEG 质量 0.82；
+// 小图（≤150KB）与 GIF（canvas 会丢动画帧）原样直通；重编码反而更大时取原样。
+const IMG_PASSTHROUGH_BYTES = 150 * 1024
+const IMG_MAX_EDGE = 1920
+const IMG_TARGET_B64 = 600 * 1024 // 压缩后 base64 文本的目标上限（约 440KB 原始字节）
+
+function readAsDataURL(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
-    reader.onload = (e) => {
-      resolve(e.target?.result as string)
-    }
-    reader.onerror = reject
+    reader.onload = () => resolve(reader.result as string)
+    reader.onerror = () => reject(reader.error)
     reader.readAsDataURL(file)
   })
+}
+
+function loadImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    img.onload = () => resolve(img)
+    img.onerror = () => reject(new Error('图片解码失败'))
+    img.src = src
+  })
+}
+
+function drawScaled(img: HTMLImageElement, edge: number): HTMLCanvasElement {
+  const nw = img.naturalWidth || img.width
+  const nh = img.naturalHeight || img.height
+  const scale = Math.min(1, edge / Math.max(nw, nh))
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.max(1, Math.round(nw * scale))
+  canvas.height = Math.max(1, Math.round(nh * scale))
+  const ctx = canvas.getContext('2d')
+  if (ctx) ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
+  return canvas
+}
+
+export async function handleImagePaste(file: File): Promise<string> {
+  const raw = await readAsDataURL(file)
+  if (file.size <= IMG_PASSTHROUGH_BYTES) return raw
+  if (file.type === 'image/gif') return raw
+  let img: HTMLImageElement
+  try { img = await loadImage(raw) } catch { return raw } // 解码失败（如 HEIC）原样兜底
+  const type = file.type === 'image/png' ? 'image/png' : 'image/jpeg' // PNG 保透明通道
+  let fallback = ''
+  for (const edge of [IMG_MAX_EDGE, 1440, 1280, 1024]) {
+    let out: string
+    try { out = drawScaled(img, edge).toDataURL(type, 0.82) } catch { return raw }
+    if (!fallback || out.length < fallback.length) fallback = out
+    if (out.length <= IMG_TARGET_B64) return out
+  }
+  return fallback && fallback.length < raw.length ? fallback : raw
 }
 
 // 插入Markdown语法

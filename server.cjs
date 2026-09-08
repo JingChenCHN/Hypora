@@ -46,7 +46,8 @@ const CHATS_DIR = path.join(DATA_ROOT, 'chats')
 const BOOTSTRAP_FILE = path.join(DATA_ROOT, 'admin-initial-password.txt')
 const SESSION_COOKIE = 'hypora_session'
 const SESSION_TTL_MS = 30 * 24 * 3600 * 1000
-const CHAT_MAX_BYTES = 2 * 1024 * 1024
+const CHAT_MAX_BYTES = 8 * 1024 * 1024 // 多会话共享上限(存档已剥离图片 data URL, 纯文本)
+const CHAT_MAX_SESSIONS = 100
 const USERNAME_RE = /^[A-Za-z0-9_]{2,32}$/
 const ADMIN_USER = process.env.HYPERA_ADMIN_USER || 'admin'
 
@@ -488,35 +489,79 @@ async function handleAdmin(req, res, session, urlPath) {
   return jsonErr(res, 404, 'not found')
 }
 
-// ===== Chats 路由(登录用户各自的聊天记录,单文件 JSON) =====
+// ===== Chats 路由(登录用户各自的聊天记录,单文件 JSON,多会话) =====
 function chatFile(username) { return path.join(CHATS_DIR, `${username}.json`) }
+
+// 从消息序列派生会话标题(取第一条用户消息首行,截 24 字)
+function deriveChatTitle(messages) {
+  for (const m of messages) {
+    if (!m || m.role !== 'user') continue
+    const text = typeof m.content === 'string'
+      ? m.content
+      : Array.isArray(m.content)
+        ? m.content.filter((p) => p && p.type === 'text').map((p) => p.text || '').join(' ')
+        : ''
+    const line = text.split('\n').map((s) => s.trim()).find(Boolean) || ''
+    if (line) return line.slice(0, 24) + (line.length > 24 ? '…' : '')
+  }
+  return '历史对话'
+}
+
+// 旧格式 {messages, reasonings} → 新格式 {chats, activeId}(读时迁移,写后自然升级)
+function normalizeChatData(data) {
+  if (data && Array.isArray(data.chats)) {
+    return {
+      chats: data.chats,
+      activeId: typeof data.activeId === 'string' ? data.activeId : '',
+      rev: data.rev || 0,
+      updatedAt: data.updatedAt || 0,
+    }
+  }
+  const messages = Array.isArray(data && data.messages) ? data.messages : []
+  const reasonings = Array.isArray(data && data.reasonings) ? data.reasonings : []
+  if (!messages.length) return { chats: [], activeId: '', rev: data ? data.rev || 0 : 0, updatedAt: data ? data.updatedAt || 0 : 0 }
+  const ts = (data && data.updatedAt) || Date.now()
+  const chat = {
+    id: 'c' + ts.toString(36) + '0',
+    title: deriveChatTitle(messages),
+    createdAt: ts, updatedAt: ts,
+    messages, reasonings,
+  }
+  return { chats: [chat], activeId: chat.id, rev: (data && data.rev) || 0, updatedAt: ts }
+}
 
 function applyChats(req, res, session) {
   const file = chatFile(session.username) // username 已过正则,无穿越风险
   if (req.method === 'GET') {
-    const data = readJson(file, { messages: [], reasonings: [], rev: 0, updatedAt: 0 })
+    const norm = normalizeChatData(readJson(file, null))
     return jsonOk(res, {
       ok: true,
-      messages: Array.isArray(data.messages) ? data.messages : [],
-      reasonings: Array.isArray(data.reasonings) ? data.reasonings : [],
-      rev: data.rev || 0,
-      updatedAt: data.updatedAt || 0,
+      chats: norm.chats,
+      activeId: norm.activeId,
+      rev: norm.rev,
+      updatedAt: norm.updatedAt,
     })
   }
   if (req.method === 'PUT') {
     return readBody(req, CHAT_MAX_BYTES).then((bodyBuf) => {
-      if (!bodyBuf) return jsonErr(res, 413, '聊天记录超出 2MB,请清理后重试')
+      if (!bodyBuf) return jsonErr(res, 413, '聊天记录超出上限,请清理后重试')
       let data
       try { data = JSON.parse(bodyBuf.toString('utf8')) } catch { return jsonErr(res, 400, 'invalid json') }
-      const messages = Array.isArray(data.messages) ? data.messages : null
-      const reasonings = Array.isArray(data.reasonings) ? data.reasonings : null
-      if (!messages || !reasonings || messages.length !== reasonings.length) {
-        return jsonErr(res, 400, 'bad chat payload')
+      const chats = Array.isArray(data.chats) ? data.chats : null
+      if (!chats) return jsonErr(res, 400, 'bad chat payload')
+      for (const c of chats) {
+        if (!c || typeof c.id !== 'string' || !c.id || c.id.length > 64) return jsonErr(res, 400, 'bad chat id')
+        if (typeof c.title !== 'string' || c.title.length > 200) return jsonErr(res, 400, 'bad chat title')
+        if (!Array.isArray(c.messages) || !Array.isArray(c.reasonings) || c.messages.length !== c.reasonings.length) {
+          return jsonErr(res, 400, 'bad chat payload')
+        }
       }
+      if (chats.length > CHAT_MAX_SESSIONS) return jsonErr(res, 400, '会话数超出上限(100)')
       return withLock(`chat:${session.username}`, () => {
-        const prev = readJson(file, { rev: 0 })
+        const prev = normalizeChatData(readJson(file, null))
         const doc = {
-          messages, reasonings,
+          chats, // 客户端已做过 trim,这里原样落盘
+          activeId: typeof data.activeId === 'string' ? data.activeId : '',
           rev: (prev.rev || 0) + 1,
           updatedAt: Date.now(),
         }

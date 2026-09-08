@@ -76,13 +76,22 @@ export function adminDeleteUser(username: string) {
 }
 
 // ---- chats ----
-export interface ChatPayload {
+export interface ChatSessionPayload {
+  id: string
+  title: string
+  createdAt: number
+  updatedAt: number
   messages: unknown[]
   reasonings: unknown[]
 }
 
+export interface ChatPayload {
+  activeId: string
+  chats: ChatSessionPayload[]
+}
+
 export function chatGet() {
-  return request<{ ok: true; messages: unknown[]; reasonings: unknown[]; rev: number; updatedAt: number }>('/api/chats')
+  return request<{ ok: true; chats: ChatSessionPayload[]; activeId: string; rev: number; updatedAt: number }>('/api/chats')
 }
 
 export function chatPut(payload: ChatPayload) {

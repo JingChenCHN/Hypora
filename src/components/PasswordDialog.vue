@@ -72,7 +72,7 @@ async function handleSubmit() {
 
 <style lang="scss" scoped>
 .pw-title {
-  font-family: Georgia, 'Songti SC', 'Source Han Serif SC', serif;
+  font-family: var(--font-serif);
   font-size: 16px;
   color: var(--text-primary);
 }
