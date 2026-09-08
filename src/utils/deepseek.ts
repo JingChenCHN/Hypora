@@ -4,9 +4,9 @@
 // GLM(智谱): base=https://open.bigmodel.cn/api/paas/v4  端点 /chat/completions  需 Bearer key,支持图文多模态
 // 三者均为 SSE 流式: data: {json}, 取 choices[0].delta.content( + reasoning_content 思考链)
 //
-// 安全模型: 网页版(非 Tauri) 默认经同源代理 /api/ai 转发(需配套 server.cjs), 访客用自己的
-// API Key; 桌面版 keep直连云端。代理白名单校验后透传 Authorization, 本身不持有密钥, 避免产生
-// 「站点级中心密钥」。
+// 安全模型: 纯浏览器网页版默认经同源代理 /api/ai 转发(需配套 server.cjs), 访客用自己的
+// API Key; 桌面版(Electron/Tauri) 直连云端。代理白名单校验后透传 Authorization, 本身不持有密钥,
+// 避免产生「站点级中心密钥」。
 
 // 多模态消息内容片段(OpenAI/GLM 通用格式)
 export type ContentPart =
@@ -19,9 +19,12 @@ export interface ChatMessage {
   content: string | ContentPart[]
 }
 
-/** 是否运行在 Tauri 桌面环境(桌面上直连云端即可,无需代理;网页浏览器则走同源代理) */
-function isTauriEnv(): boolean {
-  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+/** 是否桌面环境(Electron 或 Tauri)。桌面直连云端无需代理;仅纯浏览器网页版走同源代理。
+ *  注意:之前只判 Tauri,Electron 桌面版被误判为网页版 → 云端请求全被送进 /api/ai,
+ *  在 file:// 协议下解析成 file:///D:/api/ai 报 ERR_FILE_NOT_FOUND。 */
+function isDesktopEnv(): boolean {
+  if (typeof window === 'undefined') return false
+  return '__TAURI_INTERNALS__' in window || !!(window as any).electronAPI
 }
 
 /** 本地 llama-server 主机判断(网页上连不上本地 127.0.0.1, 保持直连语义, 桌面端才有意义) */
@@ -31,15 +34,15 @@ function isLocalBase(baseUrl: string): boolean {
 
 /**
  * 计算实际请求 URL + 目标。
- * - 非 Tauri(网页版) + 非本地  → 走同源代理 /api/ai, 真实上游 URL 放进 X-Hypora-Target 交给 server.cjs 校验转发。
- * - 其余(Tauri 桌面 / 本地模型) → 构造原始云端 URL 直接 fetch。
+ * - 纯浏览器网页版 + 非本地  → 走同源代理 /api/ai, 真实上游 URL 放进 X-Hypora-Target 交给 server.cjs 校验转发。
+ * - 其余(桌面版 Electron/Tauri / 本地模型) → 构造原始云端 URL 直接 fetch。
  * 返回的对象供发起请求使用。target 仅在内容 proxy 模式下非空。
  */
 function resolve(baseUrl: string, endpoint: string): {
   url: string; headers: Record<string, string>
 } {
   const fullTarget = baseUrl.replace(/\/+$/, '') + endpoint
-  const viaProxy = !isTauriEnv() && !isLocalBase(baseUrl)
+  const viaProxy = !isDesktopEnv() && !isLocalBase(baseUrl)
   if (viaProxy) {
     // 走同源代理: 浏览器把请求发到同源 /api/ai, 真实上游完整 URL 放 X-Hypora-Target,
     // 由 server.cjs 白名单校验后转发(CORS + key 不落服务器)。
@@ -122,10 +125,6 @@ export async function streamChat(opts: {
   }
 }
 
-/**
- * 测试连接(GET /v1/models)。用于本地引擎探测是否在运行。
- * in proxy 模式同样由同源 /api/ai 转发(GET)。
- */
 /**
  * 测试连接(GET /v1/models)。用于本地引擎探测是否在运行。
  * in proxy 模式同样由同源 /api/ai 转发(GET)。
