@@ -6,8 +6,14 @@ const { execSync } = require('child_process')
 
 const isDev = process.env.NODE_ENV === 'development'
 
-// 设置 AppUserModelId，让 Windows 任务栏/窗口预览/跳转列表显示 Hypora 而非 Electron
-app.setAppUserModelId('com.hypora.app')
+// 设置 AppUserModelId，让 Windows 任务栏/窗口预览/跳转列表显示 Hypora 而非 Electron。
+// 仅 NSIS 安装版设置：安装器创建的快捷方式携带该 AUMID，任务栏能借它解析图标。
+// 便携版（electron-builder portable 运行时注入 PORTABLE_EXECUTABLE_DIR）与开发态没有携带
+// 同名 AUMID 的快捷方式，设置后任务栏按 AUMID 查图标落空 → 空白；不设置则按窗口/exe 图标正常显示。
+const isPortable = !!process.env.PORTABLE_EXECUTABLE_DIR
+if (app.isPackaged && !isPortable) {
+  app.setAppUserModelId('com.hypora.app')
+}
 
 let mainWindow
 
@@ -186,6 +192,7 @@ function unregisterFileAssociation() {
 const windowIcon = app.isPackaged
   ? path.join(process.resourcesPath, 'favicon.ico')
   : path.join(__dirname, 'public/favicon.ico')
+appLog('INFO', `窗口图标: ${windowIcon} (${fs.existsSync(windowIcon) ? '存在' : '缺失!'})`)
 
 function createWindow() {
   const devMode = isDevMode()
