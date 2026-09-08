@@ -28,6 +28,12 @@
       "electron-preload.js",
       "public/**/*"
     ],
+    "extraResources": [
+      {
+        "from": "public/favicon.ico",
+        "to": "favicon.ico"
+      }
+    ],
     "win": {
       "target": [
         {

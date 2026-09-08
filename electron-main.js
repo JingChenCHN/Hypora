@@ -180,6 +180,13 @@ function unregisterFileAssociation() {
 }
 
 // ============ 窗口创建 ============
+// 窗口/任务栏图标：打包后必须用 asar 外的磁盘真实文件（Chromium 的窗口 icon 无法从 asar 内读取，
+// 读不到时窗口图标静默失效，便携版又没有注册 AUMID 的快捷方式 → 任务栏空白）。
+// extraResources 把 public/favicon.ico 复制到 <resources>/favicon.ico。
+const windowIcon = app.isPackaged
+  ? path.join(process.resourcesPath, 'favicon.ico')
+  : path.join(__dirname, 'public/favicon.ico')
+
 function createWindow() {
   const devMode = isDevMode()
 
@@ -189,7 +196,7 @@ function createWindow() {
     minWidth: 800,
     minHeight: 600,
     title: 'Hypora - Markdown编辑器',
-    icon: path.join(__dirname, isDev ? 'public/favicon.ico' : 'dist/favicon.ico'),
+    icon: windowIcon,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
