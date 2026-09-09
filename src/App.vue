@@ -46,13 +46,29 @@
     <BackupFiles :visible="backupVisible" @close="backupVisible = false" />
     <AdminUsers :visible="adminVisible" @close="adminVisible = false" />
     <PasswordDialog :visible="pwVisible" @close="pwVisible = false" />
+
+    <!-- 偏好设置（文件菜单 / 原生菜单共同入口；插图压缩偏好持久化 localStorage） -->
+    <el-dialog v-model="prefVisible" title="偏好设置" width="380px" class="hypora-pref-dialog">
+      <div class="pref-row">
+        <span class="pref-label">插图质量</span>
+        <el-slider v-model="imgPrefs.quality" :min="0.5" :max="1" :step="0.05" class="pref-slider" @change="persistImgPrefs" />
+        <span class="pref-value">{{ imgPrefs.quality.toFixed(2) }}</span>
+      </div>
+      <div class="pref-row">
+        <span class="pref-label">长边上限</span>
+        <el-select v-model="imgPrefs.maxEdge" size="small" class="pref-select" @change="persistImgPrefs">
+          <el-option v-for="e in edgeOptions" :key="e" :label="`${e} px`" :value="e" />
+        </el-select>
+      </div>
+      <div class="pref-hint">作用于粘贴 / 拖入插图的压缩；≤150KB 小图与 GIF 原样保留；PNG 保持 PNG 格式，质量仅对 JPEG 生效</div>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, watch, onMounted, onErrorCaptured, defineAsyncComponent } from 'vue'
 import { useDocumentStore } from '@/stores/document'
-import { copyCode } from '@/utils/markdown'
+import { copyCode, loadImgPrefs, saveImgPrefs } from '@/utils/markdown'
 import { exportMarkdown, exportHTML, exportPDF, exportImage, cloudSave } from '@/utils/export'
 import { useShortcuts } from '@/composables/useShortcuts'
 import { setupGlobalErrorHandler, devLog, isElectron } from '@/utils/devMode'
@@ -90,6 +106,14 @@ const cloudVisible = ref(false)
 const backupVisible = ref(false)
 const adminVisible = ref(false)
 const pwVisible = ref(false)
+
+// 偏好设置（插图压缩偏好；与 markdown.ts 压缩逻辑共享 localStorage 偏好）
+const prefVisible = ref(false)
+const imgPrefs = ref(loadImgPrefs())
+const edgeOptions = [1024, 1440, 1920, 2560]
+function persistImgPrefs() {
+  saveImgPrefs({ quality: imgPrefs.value.quality, maxEdge: imgPrefs.value.maxEdge })
+}
 
 // 登录门禁只作用于网页版；桌面版恒 false
 const needAuth = authNeeded()
@@ -275,6 +299,12 @@ function bootstrapEditor() {
         case 'export-image':
           handleExport('image')
           break
+        case 'preference-settings':
+          prefVisible.value = true
+          break
+        case 'dev-mode':
+          devVisible.value = true
+          break
         case 'toggle-source':
           docStore.toggleSourceMode()
           break
@@ -341,6 +371,15 @@ function handleStatsUpdate(newStats: { characters: number; words: number; lines:
 
 // 导出处理
 async function handleExport(type: string) {
+  // 文件菜单的非导出命令（偏好设置 / 开发者模式）不依赖当前文档，先于文档守卫处理
+  if (type === 'preference-settings') {
+    prefVisible.value = true
+    return
+  }
+  if (type === 'dev-mode') {
+    devVisible.value = true
+    return
+  }
   const doc = docStore.activeDocument
   if (!doc) return
   // 先同步最新编辑内容，确保导出的是最新
@@ -437,5 +476,41 @@ function handleReplace() {
   position: relative;
   overflow-y: auto;
   overflow-x: hidden;
+}
+
+/* 偏好设置对话框：冷淡单色、发丝线、方角（与整体设计语言一致） */
+.hypora-pref-dialog {
+  --el-dialog-border-radius: 2px;
+}
+.pref-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.pref-label {
+  flex: 0 0 60px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.pref-slider {
+  flex: 1;
+}
+.pref-value {
+  flex: 0 0 36px;
+  text-align: right;
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.pref-select {
+  flex: 1;
+}
+.pref-hint {
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--text-muted);
+  border-top: 1px solid var(--border-color);
+  padding-top: 10px;
 }
 </style>

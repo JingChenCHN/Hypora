@@ -21,6 +21,8 @@
               </div>
             </div>
 
+            <div class="menu-sep" />
+
             <div class="menu-group has-sub" :class="{ expanded: expandedGroup === 'open' }" @click="toggleGroup('open')">
               <el-icon><FolderOpened /></el-icon><span>打开</span>
               <el-icon class="sub-arrow"><ArrowRight /></el-icon>
@@ -37,6 +39,8 @@
               </div>
             </div>
 
+            <div class="menu-sep" />
+
             <div class="menu-group has-sub" :class="{ expanded: expandedGroup === 'save' }" @click="toggleGroup('save')">
               <el-icon><Download /></el-icon><span>保存</span>
               <el-icon class="sub-arrow"><ArrowRight /></el-icon>
@@ -49,6 +53,8 @@
                 </div>
               </div>
             </div>
+
+            <div class="menu-sep" />
 
             <div class="menu-group has-sub" :class="{ expanded: expandedGroup === 'export' }" @click="toggleGroup('export')">
               <el-icon><Upload /></el-icon><span>导出</span>
@@ -64,6 +70,15 @@
                   <el-icon><Picture /></el-icon>导出图片
                 </div>
               </div>
+            </div>
+
+            <div class="menu-sep" />
+
+            <div class="menu-group" @click="runFileCommand('preferenceSettings')">
+              <el-icon><Setting /></el-icon><span>偏好设置</span>
+            </div>
+            <div class="menu-group" @click="runFileCommand('devMode')">
+              <el-icon><Tools /></el-icon><span>开发者模式</span>
             </div>
           </div>
         </Transition>
@@ -237,32 +252,6 @@
         </template>
       </el-dropdown>
 
-      <!-- 设置（插图压缩偏好等） -->
-      <el-popover trigger="click" :width="300" placement="bottom" popper-class="hypora-settings-popper">
-        <template #reference>
-          <el-tooltip content="设置" placement="bottom">
-            <el-button text class="toolbar-btn">
-              <el-icon><Setting /></el-icon>
-            </el-button>
-          </el-tooltip>
-        </template>
-        <div class="hypora-settings">
-          <div class="setting-title">设置</div>
-          <div class="setting-row">
-            <span class="setting-label">插图质量</span>
-            <el-slider v-model="imgPrefs.quality" :min="0.5" :max="1" :step="0.05" class="setting-slider" @change="persistImgPrefs" />
-            <span class="setting-value">{{ imgPrefs.quality.toFixed(2) }}</span>
-          </div>
-          <div class="setting-row">
-            <span class="setting-label">长边上限</span>
-            <el-select v-model="imgPrefs.maxEdge" size="small" class="setting-select" @change="persistImgPrefs">
-              <el-option v-for="e in edgeOptions" :key="e" :label="`${e} px`" :value="e" />
-            </el-select>
-          </div>
-          <div class="setting-hint">作用于粘贴 / 拖入插图的压缩；≤150KB 小图与 GIF 原样保留；PNG 保持 PNG 格式，质量仅对 JPEG 生效</div>
-        </div>
-      </el-popover>
-
       <el-divider direction="vertical" />
 
       <!-- 视图切换 -->
@@ -294,10 +283,9 @@ import { useAIStore } from '@/stores/ai'
 import {
   Document, ArrowDown, ArrowRight, DocumentAdd, FolderOpened, Download, DocumentCopy, Files, Picture, PictureFilled,
   Postcard, MagicStick, Grid, ChatDotSquare, List, Select, Link, Minus, Top,
-  Search, Sunny, Moon, Coffee, Brush, Pouring, Menu, FullScreen, Cloudy, Upload, Box, Setting
+  Search, Sunny, Moon, Coffee, Brush, Pouring, Menu, FullScreen, Cloudy, Upload, Box, Setting, Tools
 } from '@element-plus/icons-vue'
 import { readMdFile } from '@/utils/export'
-import { loadImgPrefs, saveImgPrefs } from '@/utils/markdown'
 import TrafficLights from './TrafficLights.vue'
 import ImageBase64 from './ImageBase64.vue'
 import LottieLoading from './LottieLoading.vue'
@@ -317,14 +305,7 @@ const toolbarHover = ref(true)
 const isAlwaysOnTop = ref(false)
 const ib64Visible = ref(false)
 
-// 插图压缩偏好（「设置」弹层编辑，持久化 localStorage；粘贴/拖入压缩时由 markdown.ts 读取）
-const imgPrefs = ref(loadImgPrefs())
-const edgeOptions = [1024, 1440, 1920, 2560]
-function persistImgPrefs() {
-  saveImgPrefs({ quality: imgPrefs.value.quality, maxEdge: imgPrefs.value.maxEdge })
-}
-
-// 文件分组菜单（新建/打开/保存/导出）
+// 文件分组菜单（新建/打开/保存/导出/偏好设置/开发者模式）
 const fileMenuRef = ref<HTMLDivElement>()
 const fileMenuOpen = ref(false)
 const expandedGroup = ref('')
@@ -422,6 +403,12 @@ function handleFileCommand(command: string) {
       break
     case 'exportImage':
       emit('export', 'image')
+      break
+    case 'preferenceSettings':
+      emit('export', 'preference-settings')
+      break
+    case 'devMode':
+      emit('export', 'dev-mode')
       break
   }
 }
@@ -526,6 +513,12 @@ async function handleOpenFile(e: Event) {
       z-index: 210;
     }
 
+    .menu-sep {
+      height: 1px;
+      margin: 4px 10px;
+      background: var(--border-color);
+    }
+
     .menu-group, .menu-item {
       display: flex;
       align-items: center;
@@ -612,54 +605,6 @@ async function handleOpenFile(e: Event) {
     &.h2 { font-size: 18px; }
     &.h3 { font-size: 16px; }
     &.h4 { font-size: 15px; }
-  }
-}
-</style>
-
-<style lang="scss">
-/* 设置弹层内容：el-popover teleport 到 body，需全局作用域；用 popper-class 圈定范围防泄漏 */
-.hypora-settings-popper {
-  border-radius: 2px !important;
-  border-color: var(--border-color) !important;
-}
-.hypora-settings {
-  .setting-title {
-    font-size: 11px;
-    letter-spacing: 0.22em;
-    text-transform: uppercase;
-    color: var(--text-muted);
-    margin-bottom: 14px;
-  }
-  .setting-row {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    margin-bottom: 14px;
-  }
-  .setting-label {
-    flex: 0 0 60px;
-    font-size: 12px;
-    color: var(--text-secondary);
-  }
-  .setting-slider {
-    flex: 1;
-  }
-  .setting-value {
-    flex: 0 0 36px;
-    text-align: right;
-    font-size: 12px;
-    color: var(--text-secondary);
-    font-variant-numeric: tabular-nums;
-  }
-  .setting-select {
-    flex: 1;
-  }
-  .setting-hint {
-    font-size: 11px;
-    line-height: 1.7;
-    color: var(--text-muted);
-    border-top: 1px solid var(--border-color);
-    padding-top: 10px;
   }
 }
 </style>
