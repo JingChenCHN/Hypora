@@ -573,11 +573,33 @@ export function copyCode(btn: HTMLElement) {
 // 处理图片粘贴/上传/拖入（统一入口）：读为 data URL 并做文档级压缩。
 // 此前是裸 readAsDataURL —— 原样 base64，手机原图一张 3–8MB → 文档文本 ×1.37，
 // 单张即可撑爆浏览器 localStorage（~5MB），导致离线缓存 QuotaExceededError 刷屏。
-// 压缩策略：长边 ≤1920px 逐级降（1920→1440→1280→1024），JPEG 质量 0.82；
+// 压缩策略：长边从「设置」的上限逐级降（2560→1920→1440→1280→1024），JPEG 质量可在设置调；
 // 小图（≤150KB）与 GIF（canvas 会丢动画帧）原样直通；重编码反而更大时取原样。
 const IMG_PASSTHROUGH_BYTES = 150 * 1024
-const IMG_MAX_EDGE = 1920
 const IMG_TARGET_B64 = 600 * 1024 // 压缩后 base64 文本的目标上限（约 440KB 原始字节）
+
+// 插图压缩偏好（工具栏「设置」弹层读写，粘贴/拖入压缩时读取）
+const IMG_QUALITY_KEY = 'hypora_img_quality'
+const IMG_MAXEDGE_KEY = 'hypora_img_maxedge'
+const IMG_QUALITY_DEFAULT = 0.82
+const IMG_MAXEDGE_DEFAULT = 1920
+const IMG_EDGE_LADDER = [2560, 1920, 1440, 1280, 1024] // 降序，压缩时从上限起逐级降
+
+export interface ImgPrefs { quality: number; maxEdge: number }
+
+export function loadImgPrefs(): ImgPrefs {
+  const q = Number(localStorage.getItem(IMG_QUALITY_KEY))
+  const e = Number(localStorage.getItem(IMG_MAXEDGE_KEY))
+  return {
+    quality: Number.isFinite(q) && q >= 0.3 && q <= 1 ? q : IMG_QUALITY_DEFAULT,
+    maxEdge: IMG_EDGE_LADDER.includes(e) ? e : IMG_MAXEDGE_DEFAULT,
+  }
+}
+
+export function saveImgPrefs(p: ImgPrefs) {
+  localStorage.setItem(IMG_QUALITY_KEY, String(p.quality))
+  localStorage.setItem(IMG_MAXEDGE_KEY, String(p.maxEdge))
+}
 
 function readAsDataURL(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -616,10 +638,12 @@ export async function handleImagePaste(file: File): Promise<string> {
   let img: HTMLImageElement
   try { img = await loadImage(raw) } catch { return raw } // 解码失败（如 HEIC）原样兜底
   const type = file.type === 'image/png' ? 'image/png' : 'image/jpeg' // PNG 保透明通道
+  const { quality, maxEdge } = loadImgPrefs()
+  const edges = IMG_EDGE_LADDER.filter((e) => e <= maxEdge) // 从设置的上限起逐级降
   let fallback = ''
-  for (const edge of [IMG_MAX_EDGE, 1440, 1280, 1024]) {
+  for (const edge of edges) {
     let out: string
-    try { out = drawScaled(img, edge).toDataURL(type, 0.82) } catch { return raw }
+    try { out = drawScaled(img, edge).toDataURL(type, quality) } catch { return raw }
     if (!fallback || out.length < fallback.length) fallback = out
     if (out.length <= IMG_TARGET_B64) return out
   }

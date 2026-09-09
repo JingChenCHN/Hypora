@@ -237,6 +237,32 @@
         </template>
       </el-dropdown>
 
+      <!-- 设置（插图压缩偏好等） -->
+      <el-popover trigger="click" :width="300" placement="bottom" popper-class="hypora-settings-popper">
+        <template #reference>
+          <el-tooltip content="设置" placement="bottom">
+            <el-button text class="toolbar-btn">
+              <el-icon><Setting /></el-icon>
+            </el-button>
+          </el-tooltip>
+        </template>
+        <div class="hypora-settings">
+          <div class="setting-title">设置</div>
+          <div class="setting-row">
+            <span class="setting-label">插图质量</span>
+            <el-slider v-model="imgPrefs.quality" :min="0.5" :max="1" :step="0.05" class="setting-slider" @change="persistImgPrefs" />
+            <span class="setting-value">{{ imgPrefs.quality.toFixed(2) }}</span>
+          </div>
+          <div class="setting-row">
+            <span class="setting-label">长边上限</span>
+            <el-select v-model="imgPrefs.maxEdge" size="small" class="setting-select" @change="persistImgPrefs">
+              <el-option v-for="e in edgeOptions" :key="e" :label="`${e} px`" :value="e" />
+            </el-select>
+          </div>
+          <div class="setting-hint">作用于粘贴 / 拖入插图的压缩；≤150KB 小图与 GIF 原样保留；PNG 保持 PNG 格式，质量仅对 JPEG 生效</div>
+        </div>
+      </el-popover>
+
       <el-divider direction="vertical" />
 
       <!-- 视图切换 -->
@@ -268,9 +294,10 @@ import { useAIStore } from '@/stores/ai'
 import {
   Document, ArrowDown, ArrowRight, DocumentAdd, FolderOpened, Download, DocumentCopy, Files, Picture, PictureFilled,
   Postcard, MagicStick, Grid, ChatDotSquare, List, Select, Link, Minus, Top,
-  Search, Sunny, Moon, Coffee, Brush, Pouring, Menu, FullScreen, Cloudy, Upload, Box
+  Search, Sunny, Moon, Coffee, Brush, Pouring, Menu, FullScreen, Cloudy, Upload, Box, Setting
 } from '@element-plus/icons-vue'
 import { readMdFile } from '@/utils/export'
+import { loadImgPrefs, saveImgPrefs } from '@/utils/markdown'
 import TrafficLights from './TrafficLights.vue'
 import ImageBase64 from './ImageBase64.vue'
 import LottieLoading from './LottieLoading.vue'
@@ -289,6 +316,13 @@ const fileInputRef = ref<HTMLInputElement>()
 const toolbarHover = ref(true)
 const isAlwaysOnTop = ref(false)
 const ib64Visible = ref(false)
+
+// 插图压缩偏好（「设置」弹层编辑，持久化 localStorage；粘贴/拖入压缩时由 markdown.ts 读取）
+const imgPrefs = ref(loadImgPrefs())
+const edgeOptions = [1024, 1440, 1920, 2560]
+function persistImgPrefs() {
+  saveImgPrefs({ quality: imgPrefs.value.quality, maxEdge: imgPrefs.value.maxEdge })
+}
 
 // 文件分组菜单（新建/打开/保存/导出）
 const fileMenuRef = ref<HTMLDivElement>()
@@ -578,6 +612,54 @@ async function handleOpenFile(e: Event) {
     &.h2 { font-size: 18px; }
     &.h3 { font-size: 16px; }
     &.h4 { font-size: 15px; }
+  }
+}
+</style>
+
+<style lang="scss">
+/* 设置弹层内容：el-popover teleport 到 body，需全局作用域；用 popper-class 圈定范围防泄漏 */
+.hypora-settings-popper {
+  border-radius: 2px !important;
+  border-color: var(--border-color) !important;
+}
+.hypora-settings {
+  .setting-title {
+    font-size: 11px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin-bottom: 14px;
+  }
+  .setting-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+  .setting-label {
+    flex: 0 0 60px;
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+  .setting-slider {
+    flex: 1;
+  }
+  .setting-value {
+    flex: 0 0 36px;
+    text-align: right;
+    font-size: 12px;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+  }
+  .setting-select {
+    flex: 1;
+  }
+  .setting-hint {
+    font-size: 11px;
+    line-height: 1.7;
+    color: var(--text-muted);
+    border-top: 1px solid var(--border-color);
+    padding-top: 10px;
   }
 }
 </style>
