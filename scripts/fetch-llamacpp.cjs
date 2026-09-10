@@ -17,9 +17,10 @@
  *   node scripts/fetch-llamacpp.cjs --only-linux    # 仅 Linux 资产
  *   node scripts/fetch-llamacpp.cjs --skip-download # 只建目录树 + manifest（不下载）
  *
- * 失败时 exitCode=1，但**目录树与 manifest 总会生成**——保证 electron-builder 的
- * extraResources.from 永不指向悬空目录，CI 构建不会因下载抖动而整体失败。
- * （本机若在受限网络，需配置代理后再执行。）
+ * 下载源依次回落：GitHub 直连 → HYPORA_LLAMA_MIRROR（自定义前缀）→ 公共 gh 镜像。
+ * 退出码语义：任一后端就绪即 0（引擎支持单后端运行）；全部缺失才 1（构建链用 && 严格中断，
+ * 避免「静默打出空引擎目录 → 运行时报引擎文件缺失」）。
+ * 网络受限时可手动下载 zip，解压到 ai-engine/<平台>/<后端>/（llama-server.exe 须直接位于该目录）。
  */
 const fs = require('fs')
 const os = require('os')
@@ -29,6 +30,14 @@ const { execFileSync } = require('child_process')
 
 const LLAMA_TAG = 'b10872'
 const RELEASE_BASE = `https://github.com/ggml-org/llama.cpp/releases/download/${LLAMA_TAG}`
+
+// 下载源前缀依次回落：''直连 → 自定义镜像（HYPORA_LLAMA_MIRROR）→ 公共 gh 镜像（国内网络）
+const MIRROR_PREFIXES = [
+  '',
+  process.env.HYPORA_LLAMA_MIRROR || null,
+  'https://ghfast.top/',
+  'https://gh-proxy.com/',
+].filter((p) => p !== null)
 
 // 平台 → 后端 → 资产文件名（b10872 实测清单）
 const ASSETS = {
@@ -117,9 +126,20 @@ async function fetchOne(platform, backend, assetName) {
   }
 
   const archivePath = path.join(os.tmpdir(), `hypora-${assetName}`)
-  const url = `${RELEASE_BASE}/${assetName}`
-  log(`${platform}/${backend} ← ${assetName}`)
-  await download(url, archivePath)
+  let lastErr = null
+  for (const prefix of MIRROR_PREFIXES) {
+    const url = `${prefix}${RELEASE_BASE}/${assetName}`
+    log(`${platform}/${backend} ← ${prefix || 'github 直连'}${assetName}`)
+    try {
+      await download(url, archivePath)
+      lastErr = null
+      break
+    } catch (e) {
+      lastErr = e
+      log(`  源失败（${e.message}），换下一个源…`)
+    }
+  }
+  if (lastErr) throw lastErr
   const sizeMB = (fs.statSync(archivePath).size / 1024 / 1024).toFixed(1)
   log(`  下载完成 ${sizeMB} MB，解压…`)
   extract(archivePath, targetDir)
@@ -161,9 +181,24 @@ async function main() {
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n')
   log(`manifest.json 已写入${SKIP_DOWNLOAD ? '（skip-download：仅目录树）' : ''}`)
 
-  if (failures.length) {
-    log(`完成（${failures.length} 个失败：${failures.join(', ')}）`)
-    process.exitCode = 1
+  // 退出码：任一后端就绪即放行（引擎按存在的二进制挑后端）；全缺才判失败中断构建
+  if (!SKIP_DOWNLOAD) {
+    const ready = []
+    const missing = []
+    for (const platform of platforms) {
+      const marker = platform === 'win-x64' ? 'llama-server.exe' : 'llama-server'
+      for (const backend of Object.keys(ASSETS[platform] || {})) {
+        ;(fs.existsSync(path.join(AI_DIR, platform, backend, marker)) ? ready : missing).push(`${platform}/${backend}`)
+      }
+    }
+    if (missing.length) log(`⚠ 缺少 ${missing.join(', ')}——引擎将以单后端运行；可重试或手动放置后重新构建`)
+    if (!ready.length) {
+      log('✗ 没有任何可用后端，继续打包将导致运行时报「引擎文件缺失」')
+      log('  手动修复：下载 llama.cpp win zip 解压到 ai-engine/win-x64/<vulkan|cpu>/，llama-server.exe 须直接位于该目录')
+      process.exitCode = 1
+    } else {
+      log(`完成（就绪: ${ready.join(', ')}）`)
+    }
   } else {
     log('完成')
   }

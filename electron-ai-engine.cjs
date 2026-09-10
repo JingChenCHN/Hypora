@@ -367,7 +367,7 @@ async function start() {
   const usable = BACKENDS.filter((b) => fs.existsSync(exePathOf(b)))
   if (!usable.length) {
     phase = 'failed'
-    error = '引擎文件缺失'
+    error = `引擎文件缺失（${exePathOf('vulkan')}、${exePathOf('cpu')} 均未找到）`
     pushStatus()
     log('ERROR', error)
     return snapshot()
