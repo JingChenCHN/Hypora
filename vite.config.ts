@@ -48,6 +48,9 @@ export default defineConfig({
           // html2canvas/jspdf 仅导出 PDF/图片时动态 import()；lottie-web 仅 AI 面板（异步组件）使用。
           // 同理不能进 vendor 静态块，交给 rolldown 默认逻辑切成按需 async chunk。
           if (id.includes('html2canvas') || id.includes('jspdf') || id.includes('lottie')) return undefined
+          // pdfjs-dist 仅在打开 PDF 文档时由 PdfViewer.vue（异步组件）动态 import()，
+          // 同理不进 vendor，交给 rolldown 切成按需 async chunk。
+          if (id.includes('pdfjs-dist')) return undefined
           if (id.includes('katex')) return 'katex'
           if (id.includes('element-plus') || id.includes('@element-plus/icons-vue')) return 'element-plus'
           if (id.includes('marked') || id.includes('turndown')) return 'markdown'

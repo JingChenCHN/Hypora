@@ -87,7 +87,10 @@
           <div class="provider-switch">
             <button class="prov-btn" :class="{ active: aiStore.provider === 'deepseek' }" @click="aiStore.setProvider('deepseek')">DeepSeek</button>
             <button class="prov-btn" :class="{ active: aiStore.provider === 'glm' }" @click="aiStore.setProvider('glm')">GLM</button>
-            <button class="prov-btn" :class="{ active: aiStore.provider === 'local' }" @click="aiStore.setProvider('local')">本地 LLM</button>
+            <button class="prov-btn" :class="{ active: aiStore.provider === 'local' }" @click="aiStore.setProvider('local')">
+              <span v-if="hasEngine" class="prov-dot" :class="aiStore.engineDot"></span>
+              <span>{{ hasEngine ? '内置助手' : '外部 LLM' }}</span>
+            </button>
           </div>
         </div>
 
@@ -136,20 +139,87 @@
         </template>
 
         <template v-else>
-          <div class="config-row">
-            <label>地址</label>
-            <el-input v-model="aiStore.baseUrl" size="small" placeholder="http://127.0.0.1:8899" @change="aiStore.saveToLocal()" />
-          </div>
-          <div class="config-row">
-            <label>模型</label>
-            <el-input v-model="aiStore.localModel" size="small" placeholder="留空用已加载模型" @change="aiStore.saveToLocal()" style="flex:1" />
-          </div>
-          <div class="config-row">
-            <label>连接</label>
-            <el-button size="small" class="test-btn" @click="testLocal">测试</el-button>
-            <span class="conn-status" :class="{ ok: connOk }">{{ connStatus }}</span>
-          </div>
-          <p class="config-hint-row">需先启动 local-ai-engine（双击 启动.bat），使 llama-server 运行于该地址。MiniCPM5 会先输出思考链再回答。</p>
+          <!-- 形态 A：托管内置助手（桌面端有引擎且 localMode=managed）——状态行 + 模型卡 + 高级折叠 -->
+          <template v-if="hasEngine && aiStore.localMode === 'managed'">
+            <div class="engine-row">
+              <span class="prov-dot dot-lg" :class="aiStore.engineDot"></span>
+              <span class="engine-status">{{ aiStore.engineStatusText }}</span>
+              <span class="flex-spacer"></span>
+              <el-button v-if="aiStore.engineRunning" size="small" class="engine-btn" @click="aiStore.stopEngine()">停止</el-button>
+              <el-button v-else size="small" class="engine-btn" :disabled="aiStore.engineStarting" @click="onStartEngine">
+                {{ aiStore.engineStarting ? '启动中' : '启动' }}
+              </el-button>
+            </div>
+
+            <div class="model-card">
+              <div class="model-card-head">
+                <span class="model-card-label">内置模型</span>
+                <button class="link-btn" @click="onOpenModelsDir">打开目录</button>
+              </div>
+              <div v-for="m in modelList" :key="m.name" class="model-item">
+                <div class="model-item-main">
+                  <span class="model-card-name">{{ m.name }}</span>
+                  <span v-if="m.isDefault" class="model-tag">默认</span>
+                  <span class="flex-spacer"></span>
+                  <el-button v-if="rowState(m) === 'can-download'" size="small" class="engine-btn" @click="onDownload(m.name)">
+                    {{ dlPhase === 'error' && dlModelName === m.name ? '重试下载' : '下载' }}
+                  </el-button>
+                  <el-button v-else-if="rowState(m) === 'downloading'" size="small" class="engine-btn" @click="onDownloadCancel">暂停</el-button>
+                  <span v-else-if="rowState(m) === 'paused-other'" class="model-quiet">另一模型下载中</span>
+                  <span v-else class="model-quiet model-ok">已就绪</span>
+                </div>
+                <div class="model-card-size">{{ m.exists ? `已下载 · ${formatBytes(m.size)}` : `未下载 · 约 ${formatBytes(m.bytes)}` }}</div>
+              </div>
+              <template v-if="dlPhase === 'downloading'">
+                <div class="dl-track"><div class="dl-fill" :style="{ width: dlPercent + '%' }"></div></div>
+                <div class="dl-readout">
+                  {{ dlModelName }} · {{ formatBytes(aiStore.engineDownload?.receivedBytes) }} / {{ formatBytes(aiStore.engineDownload?.totalBytes) }}
+                  · {{ formatSpeed(aiStore.engineDownload?.bytesPerSecond) }} · {{ dlPercent }}%
+                </div>
+              </template>
+              <div v-else-if="dlPhase === 'error'" class="dl-readout">下载失败：{{ aiStore.engineDownload?.error }}</div>
+            </div>
+
+            <button class="adv-toggle" @click="advOpen = !advOpen">
+              <span class="adv-arrow" :class="{ open: advOpen }">▸</span>
+              高级：外部 llama-server
+            </button>
+            <div v-show="advOpen" class="adv-body">
+              <div class="config-row">
+                <label>地址</label>
+                <el-input v-model="aiStore.baseUrl" size="small" placeholder="http://127.0.0.1:8899" @change="aiStore.saveToLocal()" />
+              </div>
+              <div class="config-row">
+                <label>模型</label>
+                <el-input v-model="aiStore.localModel" size="small" placeholder="留空用已加载模型" @change="aiStore.saveToLocal()" style="flex:1" />
+              </div>
+              <div class="config-row">
+                <label>连接</label>
+                <el-button size="small" class="test-btn" @click="testLocalExternal">测试</el-button>
+                <span class="conn-status" :class="{ ok: connOk }">{{ connStatus }}</span>
+              </div>
+              <p class="config-hint-row">内置助手不使用这里的地址；此处仅用于连接你自建的外部 llama-server。MiniCPM5 会先输出思考链再回答。</p>
+            </div>
+          </template>
+
+          <!-- 形态 B：外部 llama-server（无引擎的 Web/Tauri，或有引擎但用户选外部） -->
+          <template v-else>
+            <div class="config-row">
+              <label>地址</label>
+              <el-input v-model="aiStore.baseUrl" size="small" placeholder="http://127.0.0.1:8899" @change="aiStore.saveToLocal()" />
+            </div>
+            <div class="config-row">
+              <label>模型</label>
+              <el-input v-model="aiStore.localModel" size="small" placeholder="留空用已加载模型" @change="aiStore.saveToLocal()" style="flex:1" />
+            </div>
+            <div class="config-row">
+              <label>连接</label>
+              <el-button size="small" class="test-btn" @click="testLocal">测试</el-button>
+              <span class="conn-status" :class="{ ok: connOk }">{{ connStatus }}</span>
+            </div>
+            <p class="config-hint-row">需运行外部 llama-server 并使其可访问下方地址。MiniCPM5 会先输出思考链再回答。</p>
+            <button v-if="hasEngine" class="adv-toggle" @click="useManagedMode">改用内置助手</button>
+          </template>
         </template>
       </div>
 
@@ -252,7 +322,8 @@ import { Setting, Delete, Close, Picture, Plus, ArrowDown, Edit } from '@element
 import { useAIStore, AI_PRESETS } from '@/stores/ai'
 import { useDocumentStore } from '@/stores/document'
 import { mdToHtml } from '@/utils/markdown'
-import { testChatCompletion } from '@/utils/deepseek'
+import { testChatCompletion, testConnection as testExternalConn } from '@/utils/deepseek'
+import { hasAiEngine, engineApi } from '@/utils/aiEngine'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import LottieLoading from './LottieLoading.vue'
 import assistantAnim from '@/assets/ai-assistant-bubble.json'
@@ -289,6 +360,10 @@ watch(() => props.visible, (v) => {
   cleanupSelectionWatch?.()
   cleanupSelectionWatch = null
   if (!v) return
+  // 面板打开且选了内置助手但模型文件缺失：自动展开配置区，让用户第一眼看到模型卡与下载入口
+  if (aiStore.provider === 'local' && hasEngine && aiStore.localMode === 'managed' && aiStore.engineModel && !aiStore.engineModel.modelExists) {
+    configVisible.value = true
+  }
   const onSel = () => scheduleReadSelected()
   readSelected()
   document.addEventListener('selectionchange', onSel)
@@ -311,6 +386,73 @@ const connStatus = ref('')
 const connOk = ref(false)
 const glmConnStatus = ref('')
 const glmConnOk = ref(false)
+
+// ===== 内置本地助手（托管引擎）=====
+// 引擎能力门：仅 Windows Electron 桌面端为 true；Web/Tauri 恒为 false（不渲染任何引擎 UI）
+const hasEngine = hasAiEngine()
+// 高级折叠区（外部 llama-server 地址/模型/测试）默认收起
+const advOpen = ref(false)
+
+const dlPhase = computed(() => aiStore.engineDownload?.phase ?? 'idle')
+// 进度条宽度收敛到 0-100，避免异常推送把轨道撑爆
+const dlPercent = computed(() => {
+  const p = aiStore.engineDownload?.percent ?? 0
+  return Math.min(100, Math.max(0, Math.round(p)))
+})
+// 双模型：config.models 驱动模型卡；正在下载的模型名来自下载推送
+const modelList = computed(() => aiStore.engineModel?.models ?? [])
+const dlModelName = computed(() => aiStore.engineDownload?.model ?? null)
+// 行状态：就绪 / 本模型下载中（暂停）/ 他模型下载中（排队提示）/ 可下载（含失败重试）
+function rowState(m: { name: string; exists: boolean }): 'ready' | 'downloading' | 'paused-other' | 'can-download' {
+  if (m.exists) return 'ready'
+  if (dlPhase.value === 'downloading') return dlModelName.value === m.name ? 'downloading' : 'paused-other'
+  return 'can-download'
+}
+
+async function onStartEngine() {
+  const ok = await aiStore.startEngine()
+  if (!ok && !aiStore.engineRunning) {
+    ElMessage.error(aiStore.engineError ? `内置助手启动失败：${aiStore.engineError}` : '内置助手启动失败')
+  }
+}
+function onDownload(name?: string) {
+  // 下载进度由主进程推送写入 aiStore.engineDownload，这里只负责发起（name 缺省用引擎默认模型）
+  void engineApi.download(name)
+}
+function onDownloadCancel() {
+  void engineApi.downloadCancel()
+}
+async function onOpenModelsDir() {
+  const r = await engineApi.openModelsDir()
+  if (r && !r.ok) ElMessage.error(r.error || '打开模型目录失败')
+}
+// 高级区的测试必须强制走外部 baseUrl：store.testConnection 在托管模式会路由到引擎端点
+async function testLocalExternal() {
+  connStatus.value = '测试中…'
+  connOk.value = false
+  const r = await testExternalConn(aiStore.baseUrl, undefined)
+  connOk.value = r.ok
+  connStatus.value = r.ok ? (r.info ? `已连接：${r.info}` : '已连接') : (r.error || '未连接')
+}
+// 有引擎但用户选了外部模式：一键切回托管内置助手
+function useManagedMode() {
+  aiStore.localMode = 'managed'
+  aiStore.saveToLocal()
+}
+
+// 字节/速率读数：GB 一位小数、MB 取整；0/undefined 显示占位 —
+function formatBytes(n?: number): string {
+  if (!n) return '—'
+  const gb = n / (1024 * 1024 * 1024)
+  if (gb >= 1) return `${gb.toFixed(1)} GB`
+  const mb = n / (1024 * 1024)
+  if (mb >= 1) return `${Math.round(mb)} MB`
+  return `${Math.max(1, Math.round(n / 1024))} KB`
+}
+function formatSpeed(n?: number): string {
+  if (!n) return '—'
+  return `${(n / (1024 * 1024)).toFixed(1)} MB/s`
+}
 
 const lastIdx = computed(() => aiStore.messages.length - 1)
 
@@ -809,6 +951,10 @@ function copyText(text: string) {
   }
   .prov-btn {
     flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
     padding: 5px 8px;
     font-size: 12.5px;
     color: var(--text-secondary);
@@ -824,6 +970,153 @@ function copyText(text: string) {
     &:not(.active):hover {
       background: var(--bg-tertiary);
     }
+  }
+  /* —— 内置助手：状态点（面板与工具栏共用规格：6px，状态行 8px）—— */
+  .prov-dot {
+    flex-shrink: 0;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--border-color);
+
+    &.ok { background: var(--el-color-success); }
+    &.err { background: var(--el-color-danger); }
+    &.off { background: var(--border-color); }
+    &.dot-lg { width: 8px; height: 8px; }
+  }
+  /* —— 引擎状态行：点 + 文案 + 启停按钮 —— */
+  .engine-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .engine-status {
+    font-size: 12.5px;
+    color: var(--text-primary);
+  }
+  .flex-spacer {
+    flex: 1;
+  }
+  .engine-btn {
+    border-radius: 2px !important;
+  }
+  .link-btn {
+    border: none;
+    background: none;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 12px;
+    color: var(--text-muted);
+    padding: 2px 4px;
+    border-radius: 2px;
+    transition: all 0.2s;
+
+    &:hover { color: var(--text-primary); background: var(--bg-tertiary); }
+  }
+  /* —— 内置模型卡：平卡（hair 描边、方角、无阴影）—— */
+  .model-card {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 10px 12px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 2px;
+  }
+  .model-card-label {
+    font-size: 11px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+  .model-card-name {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-primary);
+    word-break: break-all;
+  }
+  .model-card-size {
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-muted);
+  }
+  .model-card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .model-item {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding-top: 6px;
+    border-top: 1px solid var(--border-color);
+  }
+  .model-item-main {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .model-tag {
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    color: var(--text-secondary);
+    border: 1px solid var(--border-color);
+    padding: 0 4px;
+    border-radius: 2px;
+  }
+  .model-quiet {
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+  .model-ok {
+    color: var(--el-color-success);
+  }
+  /* —— 下载进度：2px 方角轨道，墨色填充 —— */
+  .dl-track {
+    height: 2px;
+    margin-top: 4px;
+    background: var(--border-color);
+    overflow: hidden;
+  }
+  .dl-fill {
+    height: 100%;
+    background: var(--text-primary);
+    transition: width 0.2s linear;
+  }
+  .dl-readout {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-muted);
+  }
+  /* —— 高级折叠区：外部 llama-server（默认收起）—— */
+  .adv-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    align-self: flex-start;
+    padding: 2px 0;
+    border: none;
+    background: none;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 11px;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+    transition: color 0.2s;
+
+    &:hover { color: var(--text-secondary); }
+  }
+  .adv-arrow {
+    font-size: 10px;
+    transition: transform 0.2s ease;
+    &.open { transform: rotate(90deg); }
+  }
+  .adv-body {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
   }
   .test-btn {
     border-radius: 2px !important;

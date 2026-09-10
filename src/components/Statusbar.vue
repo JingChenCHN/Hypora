@@ -9,8 +9,9 @@
       >
         <el-icon><ArrowLeft v-if="docStore.sidebarVisible" /><ArrowRight v-else /></el-icon>
       </span>
-      <!-- 源码模式（Typora 左下角 </>，激活呈方框态即退出入口） -->
+      <!-- 源码模式（Typora 左下角 </>，激活呈方框态即退出入口）；PDF 只读无源码形态 -->
       <span
+        v-if="!docStore.isPdfActive"
         class="status-icon-btn source-toggle"
         :class="{ 'is-active': docStore.isSourceMode }"
         :title="docStore.isSourceMode ? '退出源码模式 (Ctrl+/)' : '源码模式 (Ctrl+/)'"
@@ -25,7 +26,11 @@
     </div>
 
     <div class="statusbar-right">
-      <span class="status-item">{{ stats.words }} 词</span>
+      <!-- PDF 阅读模式：页码/缩放读数替代字数统计 -->
+      <span v-if="docStore.isPdfActive" class="status-item pdf-readout" title="PDF 阅读模式">
+        第 {{ docStore.pdfPage || 1 }} / {{ docStore.pdfTotalPages }} 页 · {{ docStore.pdfZoom }}%
+      </span>
+      <span v-else class="status-item">{{ stats.words }} 词</span>
       <!-- 账号区：仅网页登录后渲染；桌面版 me 恒空不显示 -->
       <template v-if="authStore.me">
         <span class="status-divider"></span>
@@ -110,6 +115,12 @@ async function handleLogout() {
     align-items: center;
     gap: 4px;
     padding: 0 4px;
+
+    // PDF 页码/缩放读数：等宽数字，避免翻页时宽度抖动
+    &.pdf-readout {
+      font-variant-numeric: tabular-nums;
+      color: var(--text-secondary);
+    }
 
     &.account-name {
       color: var(--text-secondary);

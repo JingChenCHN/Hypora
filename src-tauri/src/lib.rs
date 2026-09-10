@@ -11,6 +11,12 @@ struct OpenFileResult {
     title: String,
     content: String,
     file_path: String,
+    // 'markdown' | 'pdf'；kind='pdf' 时 content 为空、base64 携带二进制
+    kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    base64: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -60,19 +66,55 @@ async fn open_file_dialog(app: tauri::AppHandle) -> Result<Option<OpenFileResult
         .dialog()
         .file()
         .add_filter("Markdown", &["md", "markdown"])
+        .add_filter("PDF", &["pdf"])
         .blocking_pick_file();
     match path {
         Some(p) => {
             let fp = p.into_path().map_err(|e| e.to_string())?;
-            let content = fs::read_to_string(&fp).map_err(|e| e.to_string())?;
             let title = fp
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("document")
                 .to_string();
             let file_path = fp.to_string_lossy().to_string();
+            // PDF：二进制读入 → base64（content 留空，payload 形状与 Electron readOpenPayload 一致）
+            if file_path.to_lowercase().ends_with(".pdf") {
+                const PDF_SIZE_LIMIT: u64 = 200 * 1024 * 1024;
+                let oversize = fs::metadata(&fp).map(|m| m.len() > PDF_SIZE_LIMIT).unwrap_or(false);
+                if oversize {
+                    write_log("WARN", "main", &format!("PDF 文件过大: {}", file_path));
+                    return Ok(Some(OpenFileResult {
+                        title,
+                        content: String::new(),
+                        file_path,
+                        kind: "pdf".to_string(),
+                        base64: Some(String::new()),
+                        error: Some("PDF 文件过大（>200MB），无法打开".to_string()),
+                    }));
+                }
+                let bytes = fs::read(&fp).map_err(|e| e.to_string())?;
+                use base64::{Engine, engine::general_purpose};
+                let b64 = general_purpose::STANDARD.encode(&bytes);
+                write_log("INFO", "main", &format!("打开文件: {}", file_path));
+                return Ok(Some(OpenFileResult {
+                    title,
+                    content: String::new(),
+                    file_path,
+                    kind: "pdf".to_string(),
+                    base64: Some(b64),
+                    error: None,
+                }));
+            }
+            let content = fs::read_to_string(&fp).map_err(|e| e.to_string())?;
             write_log("INFO", "main", &format!("打开文件: {}", file_path));
-            Ok(Some(OpenFileResult { title, content, file_path }))
+            Ok(Some(OpenFileResult {
+                title,
+                content,
+                file_path,
+                kind: "markdown".to_string(),
+                base64: None,
+                error: None,
+            }))
         }
         None => Ok(None),
     }
@@ -206,21 +248,57 @@ pub fn run() {
             let window = app.get_webview_window("main").unwrap();
             let _ = window.set_title("Hypora - Markdown编辑器");
             write_log("INFO", "main", "Hypora 启动");
-            // 检查命令行 .md 文件（双击文件打开），emit open-file 事件
-            if let Some(md_path) = std::env::args().skip(1).find(|a| a.ends_with(".md") || a.ends_with(".markdown")) {
-                if let Ok(content) = fs::read_to_string(&md_path) {
-                    let title = PathBuf::from(&md_path)
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("document")
-                        .to_string();
-                    let _ = app.emit("open-file", serde_json::json!({
-                        "title": title,
-                        "content": content,
-                        "filePath": md_path
-                    }));
-                    write_log("INFO", "main", &format!("通过参数打开文件: {}", md_path));
-                }
+            // 检查命令行 .md/.pdf 文件（双击文件打开），emit open-file 事件
+            if let Some(md_path) = std::env::args().skip(1).find(|a| {
+                let l = a.to_lowercase();
+                l.ends_with(".md") || l.ends_with(".markdown") || l.ends_with(".pdf")
+            }) {
+                let title = PathBuf::from(&md_path)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("document")
+                    .to_string();
+                let is_pdf = md_path.to_lowercase().ends_with(".pdf");
+                let payload = if is_pdf {
+                    match fs::read(&md_path) {
+                        Ok(bytes) => {
+                            use base64::{Engine, engine::general_purpose};
+                            serde_json::json!({
+                                "title": title,
+                                "content": "",
+                                "filePath": md_path.clone(),
+                                "kind": "pdf",
+                                "base64": general_purpose::STANDARD.encode(&bytes)
+                            })
+                        }
+                        Err(e) => serde_json::json!({
+                            "title": title,
+                            "content": "",
+                            "filePath": md_path.clone(),
+                            "kind": "pdf",
+                            "base64": "",
+                            "error": e.to_string()
+                        }),
+                    }
+                } else {
+                    match fs::read_to_string(&md_path) {
+                        Ok(content) => serde_json::json!({
+                            "title": title,
+                            "content": content,
+                            "filePath": md_path.clone(),
+                            "kind": "markdown"
+                        }),
+                        Err(e) => serde_json::json!({
+                            "title": title,
+                            "content": "",
+                            "filePath": md_path.clone(),
+                            "kind": "markdown",
+                            "error": e.to_string()
+                        }),
+                    }
+                };
+                let _ = app.emit("open-file", payload);
+                write_log("INFO", "main", &format!("通过参数打开文件: {}", md_path));
             }
             Ok(())
         })

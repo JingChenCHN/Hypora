@@ -329,3 +329,18 @@ export function readMdFile(file: File): Promise<{ title: string, content: string
     reader.readAsText(file, 'utf-8')
   })
 }
+
+// 读取本地 PDF 文件为 base64（网页版打开入口；桌面版由主进程读取）
+export function readPdfFile(file: File): Promise<{ title: string, base64: string }> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      // data:application/pdf;base64,xxxx → 取后半段
+      const base64 = String(e.target?.result || '').split(',')[1] || ''
+      const title = file.name.replace(/\.pdf$/i, '')
+      resolve({ title, base64 })
+    }
+    reader.onerror = reject
+    reader.readAsDataURL(file)
+  })
+}

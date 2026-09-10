@@ -87,7 +87,7 @@
       <el-divider direction="vertical" />
 
       <!-- 标题选择 -->
-      <el-dropdown trigger="click" @command="handleHeading">
+      <el-dropdown trigger="click" :disabled="docStore.isPdfActive" @command="handleHeading">
         <el-button text class="toolbar-btn">
           <el-icon><Postcard /></el-icon>
           <span>标题</span>
@@ -106,31 +106,31 @@
 
       <!-- 文字样式 -->
       <el-tooltip content="粗体 (Ctrl+B)" placement="bottom">
-        <el-button text class="toolbar-btn format-btn" @click="triggerAction('bold')">
+        <el-button text class="toolbar-btn format-btn" :disabled="docStore.isPdfActive" @click="triggerAction('bold')">
           <span class="bold">B</span>
         </el-button>
       </el-tooltip>
 
       <el-tooltip content="斜体 (Ctrl+I)" placement="bottom">
-        <el-button text class="toolbar-btn format-btn" @click="triggerAction('italic')">
+        <el-button text class="toolbar-btn format-btn" :disabled="docStore.isPdfActive" @click="triggerAction('italic')">
           <span class="italic">I</span>
         </el-button>
       </el-tooltip>
 
       <el-tooltip content="下划线 (Ctrl+U)" placement="bottom">
-        <el-button text class="toolbar-btn format-btn" @click="triggerAction('underline')">
+        <el-button text class="toolbar-btn format-btn" :disabled="docStore.isPdfActive" @click="triggerAction('underline')">
           <span class="underline">U</span>
         </el-button>
       </el-tooltip>
 
       <el-tooltip content="删除线 (Alt+Shift+5)" placement="bottom">
-        <el-button text class="toolbar-btn format-btn" @click="triggerAction('strikethrough')">
+        <el-button text class="toolbar-btn format-btn" :disabled="docStore.isPdfActive" @click="triggerAction('strikethrough')">
           <span class="strikethrough">S</span>
         </el-button>
       </el-tooltip>
 
       <el-tooltip content="高亮 (Ctrl+Shift+H)" placement="bottom">
-        <el-button text class="toolbar-btn format-btn" @click="triggerAction('highlight')">
+        <el-button text class="toolbar-btn format-btn" :disabled="docStore.isPdfActive" @click="triggerAction('highlight')">
           <span class="highlight">H</span>
         </el-button>
       </el-tooltip>
@@ -139,25 +139,25 @@
 
       <!-- 代码 -->
       <el-tooltip content="行内代码 (Ctrl+`)" placement="bottom">
-        <el-button text class="toolbar-btn" @click="triggerAction('code')">
+        <el-button text class="toolbar-btn" :disabled="docStore.isPdfActive" @click="triggerAction('code')">
           <el-icon><MagicStick /></el-icon>
         </el-button>
       </el-tooltip>
 
       <el-tooltip content="代码块 (Ctrl+Shift+K)" placement="bottom">
-        <el-button text class="toolbar-btn" @click="triggerAction('codeBlock')">
+        <el-button text class="toolbar-btn" :disabled="docStore.isPdfActive" @click="triggerAction('codeBlock')">
           <el-icon><DocumentCopy /></el-icon>
         </el-button>
       </el-tooltip>
 
       <el-tooltip content="表格 (Ctrl+Shift+T)" placement="bottom">
-        <el-button text class="toolbar-btn" @click="triggerAction('table')">
+        <el-button text class="toolbar-btn" :disabled="docStore.isPdfActive" @click="triggerAction('table')">
           <el-icon><Grid /></el-icon>
         </el-button>
       </el-tooltip>
 
       <el-tooltip content="引用 (Ctrl+Shift+Q)" placement="bottom">
-        <el-button text class="toolbar-btn" @click="triggerAction('quote')">
+        <el-button text class="toolbar-btn" :disabled="docStore.isPdfActive" @click="triggerAction('quote')">
           <el-icon><ChatDotSquare /></el-icon>
         </el-button>
       </el-tooltip>
@@ -166,19 +166,19 @@
 
       <!-- 列表 -->
       <el-tooltip content="无序列表 (Ctrl+Shift+U)" placement="bottom">
-        <el-button text class="toolbar-btn" @click="triggerAction('ul')">
+        <el-button text class="toolbar-btn" :disabled="docStore.isPdfActive" @click="triggerAction('ul')">
           <el-icon><List /></el-icon>
         </el-button>
       </el-tooltip>
 
       <el-tooltip content="有序列表 (Ctrl+Shift+O)" placement="bottom">
-        <el-button text class="toolbar-btn" @click="triggerAction('ol')">
+        <el-button text class="toolbar-btn" :disabled="docStore.isPdfActive" @click="triggerAction('ol')">
           <span style="font-weight: bold; font-size: 14px;">1.</span>
         </el-button>
       </el-tooltip>
 
       <el-tooltip content="任务列表 (Ctrl+Shift+X)" placement="bottom">
-        <el-button text class="toolbar-btn" @click="triggerAction('task')">
+        <el-button text class="toolbar-btn" :disabled="docStore.isPdfActive" @click="triggerAction('task')">
           <el-icon><Select /></el-icon>
         </el-button>
       </el-tooltip>
@@ -187,19 +187,19 @@
 
       <!-- 插入内容 -->
       <el-tooltip content="链接 (Ctrl+K)" placement="bottom">
-        <el-button text class="toolbar-btn" @click="triggerAction('link')">
+        <el-button text class="toolbar-btn" :disabled="docStore.isPdfActive" @click="triggerAction('link')">
           <el-icon><Link /></el-icon>
         </el-button>
       </el-tooltip>
 
       <el-tooltip content="图片 (Ctrl+Shift+I)" placement="bottom">
-        <el-button text class="toolbar-btn" @click="triggerAction('image')">
+        <el-button text class="toolbar-btn" :disabled="docStore.isPdfActive" @click="triggerAction('image')">
           <el-icon><Picture /></el-icon>
         </el-button>
       </el-tooltip>
 
       <el-tooltip content="分割线 (Ctrl+Shift+-)" placement="bottom">
-        <el-button text class="toolbar-btn" @click="triggerAction('hr')">
+        <el-button text class="toolbar-btn" :disabled="docStore.isPdfActive" @click="triggerAction('hr')">
           <el-icon><Minus /></el-icon>
         </el-button>
       </el-tooltip>
@@ -213,23 +213,23 @@
         </el-button>
       </el-tooltip>
 
-      <!-- 搜索 -->
+      <!-- 搜索 / AI 助手 / 图片转 Base64：PDF 只读模式下不可用 -->
       <el-tooltip content="搜索替换 (Ctrl+F)" placement="bottom">
-        <el-button text class="toolbar-btn" @click="emit('toggleSearch')">
+        <el-button text class="toolbar-btn" :disabled="docStore.isPdfActive" @click="emit('toggleSearch')">
           <el-icon><Search /></el-icon>
         </el-button>
       </el-tooltip>
 
-      <!-- AI 助手 -->
-      <el-tooltip content="AI 助手 (Ctrl+J)" placement="bottom">
-        <el-button text class="toolbar-btn ai-btn" :class="{ 'is-active': aiStore.panelVisible }" @click="aiStore.togglePanel()">
+      <el-tooltip :content="aiTooltip" placement="bottom">
+        <el-button text class="toolbar-btn ai-btn" :disabled="docStore.isPdfActive" :class="{ 'is-active': aiStore.panelVisible }" @click="aiStore.togglePanel()">
           <LottieLoading :animation="assistantAnim" size="icon" />
+          <span v-if="showAiDot" class="ai-dot" :class="aiStore.engineDot"></span>
         </el-button>
       </el-tooltip>
 
       <!-- 图片转 Base64 -->
       <el-tooltip content="图片转 Base64" placement="bottom">
-        <el-button text class="toolbar-btn" @click="ib64Visible = true">
+        <el-button text class="toolbar-btn" :disabled="docStore.isPdfActive" @click="ib64Visible = true">
           <el-icon><PictureFilled /></el-icon>
         </el-button>
       </el-tooltip>
@@ -269,7 +269,7 @@
     </div>
 
     <!-- 隐藏的文件输入 -->
-    <input ref="fileInputRef" type="file" accept=".md" hidden @change="handleOpenFile">
+    <input ref="fileInputRef" type="file" accept=".md,.pdf" hidden @change="handleOpenFile">
 
     <!-- 图片转 Base64 对话框 -->
     <ImageBase64 v-model="ib64Visible" />
@@ -277,15 +277,16 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useDocumentStore } from '@/stores/document'
 import { useAIStore } from '@/stores/ai'
+import { hasAiEngine } from '@/utils/aiEngine'
 import {
   Document, ArrowDown, ArrowRight, DocumentAdd, FolderOpened, Download, DocumentCopy, Files, Picture, PictureFilled,
   Postcard, MagicStick, Grid, ChatDotSquare, List, Select, Link, Minus, Top,
   Search, Sunny, Moon, Coffee, Brush, Pouring, Menu, FullScreen, Cloudy, Upload, Box, Setting, Tools
 } from '@element-plus/icons-vue'
-import { readMdFile } from '@/utils/export'
+import { readMdFile, readPdfFile } from '@/utils/export'
 import TrafficLights from './TrafficLights.vue'
 import ImageBase64 from './ImageBase64.vue'
 import LottieLoading from './LottieLoading.vue'
@@ -300,6 +301,14 @@ const emit = defineEmits<{
 
 const docStore = useDocumentStore()
 const aiStore = useAIStore()
+
+// 内置助手徽标：仅桌面端有引擎且用户选了 local 提供方时显示状态点；tooltip 同步引擎状态
+const showAiDot = computed(() => hasAiEngine() && aiStore.provider === 'local')
+const aiTooltip = computed(() =>
+  hasAiEngine() && aiStore.provider === 'local'
+    ? `内置助手：${aiStore.engineStatusText} (Ctrl+J)`
+    : 'AI 助手 (Ctrl+J)'
+)
 const fileInputRef = ref<HTMLInputElement>()
 const toolbarHover = ref(true)
 const isAlwaysOnTop = ref(false)
@@ -416,8 +425,15 @@ function handleFileCommand(command: string) {
 async function handleOpenFile(e: Event) {
   const file = (e.target as HTMLInputElement).files?.[0]
   if (file) {
-    const { title, content } = await readMdFile(file)
-    docStore.importDocument(title, content)
+    // PDF：字节转 base64，进入只读预览
+    if (/\.pdf$/i.test(file.name) || file.type === 'application/pdf') {
+      const { title, base64 } = await readPdfFile(file)
+      docStore.importPdfDocument(title, base64)
+      ElMessage.success(`已打开: ${title}`)
+    } else {
+      const { title, content } = await readMdFile(file)
+      docStore.importDocument(title, content)
+    }
   }
   if (fileInputRef.value) {
     fileInputRef.value.value = ''
@@ -495,6 +511,25 @@ async function handleOpenFile(e: Event) {
       color: var(--accent-color);
       background: var(--bg-secondary);
     }
+  }
+
+  // 内置助手徽标：6px 状态点，钉在 AI 按钮右上，与 lottie 图标分离
+  .ai-btn {
+    position: relative;
+  }
+  .ai-dot {
+    position: absolute;
+    top: 5px;
+    right: 5px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--border-color);
+    box-shadow: 0 0 0 2px var(--bg-primary);
+
+    &.ok { background: var(--el-color-success); }
+    &.err { background: var(--el-color-danger); }
+    &.off { background: var(--border-color); }
   }
   // 文件分组菜单（新建/打开/保存/导出，悬停或点击大类展开子项）
   .file-menu {

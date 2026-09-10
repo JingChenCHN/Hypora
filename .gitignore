@@ -7,6 +7,9 @@ dist-ssr/
 release/
 *.local
 
+# llama.cpp 运行时（scripts/fetch-llamacpp.cjs 拉取，不入库）
+ai-engine/
+
 # Tauri
 src-tauri/target/
 src-tauri/gen/

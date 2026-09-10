@@ -42,6 +42,12 @@ function appLog(level, message) {
   writeLog(level, 'main', message)
 }
 
+// ============ 内置本地助手（llama.cpp sidecar，见 electron-ai-engine.cjs）============
+// 引擎模块自带 ai-engine:* IPC 注册；日志复用应用日志文件，source 标记 ai-engine。
+const aiEngine = require('./electron-ai-engine.cjs').initAiEngine((level, message) => {
+  writeLog(level, 'ai-engine', message)
+})
+
 // 捕获主进程未处理异常
 process.on('uncaughtException', (err) => {
   appLog('ERROR', `UncaughtException: ${err.stack || err.message}`)
@@ -64,17 +70,36 @@ function setDevMode(enabled) {
 }
 
 // ============ 打开本地文件 ============
+// PDF 读取上限：超过则拒绝打开（防 base64 转换与 pdf.js 内存压力）
+const PDF_SIZE_LIMIT = 200 * 1024 * 1024
+
+// 统一读取打开负载：md 按 UTF-8 文本，pdf 按二进制转 base64（kind 字段区分）
+function readOpenPayload(filePath) {
+  const title = path.basename(filePath, path.extname(filePath))
+  if (/\.pdf$/i.test(filePath)) {
+    const buf = fs.readFileSync(filePath)
+    if (buf.length > PDF_SIZE_LIMIT) {
+      return { title, filePath, kind: 'pdf', base64: '', error: 'PDF 文件过大（>200MB），无法打开' }
+    }
+    return { title, filePath, kind: 'pdf', base64: buf.toString('base64') }
+  }
+  return { title, content: fs.readFileSync(filePath, 'utf-8'), filePath, kind: 'markdown' }
+}
+
 async function openLocalFile() {
   const result = await dialog.showOpenDialog(mainWindow, {
-    filters: [{ name: 'Markdown文件', extensions: ['md', 'markdown'] }, { name: '所有文件', extensions: ['*'] }],
+    filters: [
+      { name: 'Markdown文件', extensions: ['md', 'markdown'] },
+      { name: 'PDF文件', extensions: ['pdf'] },
+      { name: '所有文件', extensions: ['*'] }
+    ],
     properties: ['openFile']
   })
   if (result.canceled || result.filePaths.length === 0) return { success: false, canceled: true }
   try {
     const filePath = result.filePaths[0]
-    const content = fs.readFileSync(filePath, 'utf-8')
-    const title = path.basename(filePath, path.extname(filePath))
-    mainWindow.webContents.send('open-file', { title, content, filePath })
+    const payload = readOpenPayload(filePath)
+    mainWindow.webContents.send('open-file', payload)
     appLog('INFO', `打开文件: ${filePath}`)
     return { success: true, filePath }
   } catch (e) {
@@ -83,12 +108,12 @@ async function openLocalFile() {
   }
 }
 
-// 从命令行参数提取 .md/.markdown 文件路径（双击文件打开时）
+// 从命令行参数提取 .md/.markdown/.pdf 文件路径（双击文件打开时）
 function getFileFromArgv(argv) {
   const args = argv || process.argv
   for (let i = 1; i < args.length; i++) {
     const a = String(args[i])
-    if (/\.md$/i.test(a) || /\.markdown$/i.test(a)) return a
+    if (/\.md$/i.test(a) || /\.markdown$/i.test(a) || /\.pdf$/i.test(a)) return a
   }
   return null
 }
@@ -97,9 +122,8 @@ function getFileFromArgv(argv) {
 async function openFilePath(filePath) {
   if (!filePath || !fs.existsSync(filePath)) return
   try {
-    const content = fs.readFileSync(filePath, 'utf-8')
-    const title = path.basename(filePath, path.extname(filePath))
-    mainWindow.webContents.send('open-file', { title, content, filePath })
+    const payload = readOpenPayload(filePath)
+    mainWindow.webContents.send('open-file', payload)
     appLog('INFO', `通过参数打开文件: ${filePath}`)
   } catch (e) {
     appLog('ERROR', `打开文件失败: ${e.message}`)
@@ -655,7 +679,14 @@ app.whenReady().then(() => {
   if (file && mainWindow) {
     mainWindow.webContents.once('did-finish-load', () => openFilePath(file))
   }
+  // 内置助手：本地已有模型则顺带拉起引擎（Vulkan→CPU 自动回落）。
+  // 模型缺失时静默跳过（MODEL_MISSING 由渲染层面板引导下载）；状态经 ai-engine-status 推送。
+  aiEngine.start().catch(() => {})
 })
+
+// 两条退出路径独立盖杀：防止 llama-server 孤儿进程（系统设计文档 D4）
+app.on('before-quit', () => aiEngine.kill())
+app.on('will-quit', () => aiEngine.kill())
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()

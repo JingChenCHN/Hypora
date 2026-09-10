@@ -142,14 +142,20 @@ useShortcuts({
   'f11': () => docStore.toggleFullscreen(),
   'f9': () => docStore.toggleSidebar(),
   'f12': () => { devVisible.value = !devVisible.value },
-  'ctrl+f': () => { searchVisible.value = !searchVisible.value },
+  'ctrl+f': () => {
+    if (docStore.isPdfActive) { ElMessage.info('PDF 阅读模式不支持查找'); return }
+    searchVisible.value = !searchVisible.value
+  },
   'ctrl+h': () => { searchVisible.value = true },
   'ctrl+shift+=': () => setZoom(zoomLevel.value + 10),
   'ctrl+shift+-': () => setZoom(zoomLevel.value - 10),
   'ctrl+shift+0': () => setZoom(100),
   'ctrl+shift+t': () => docStore.toggleTypewriter(),
   'ctrl+shift+g': () => docStore.toggleFocus(),
-  'ctrl+j': () => aiStore.togglePanel(),
+  'ctrl+j': () => {
+    if (docStore.isPdfActive) { ElMessage.info('PDF 阅读模式不支持 AI 助手'); return }
+    aiStore.togglePanel()
+  },
   'ctrl+shift+a': () => toggleAlwaysOnTop()
 })
 
@@ -157,6 +163,11 @@ useShortcuts({
 async function saveDocument() {
   const doc = docStore.activeDocument
   if (!doc) return
+  // PDF 为只读预览：绝不能走写回/导出链路（content 为空，写回会清空源文件）
+  if (doc.kind === 'pdf') {
+    ElMessage.info('PDF 为只读预览，无需保存')
+    return
+  }
   // 先立即同步所见即所得编辑内容（不等防抖），确保保存的是最新内容
   editorRef.value?.flushSync?.()
   const current = docStore.activeDocument
@@ -207,8 +218,15 @@ async function toggleAlwaysOnTop() {
   ElMessage.success({ message: isOn ? '窗口已置顶' : '已取消置顶', duration: 1500 })
 }
 
-// 视图缩放（Typora Ctrl+Shift+=/-）
+// 视图缩放（Typora Ctrl+Shift+=/-）；PDF 文档激活时直接驱动 PDF 缩放
 function setZoom(level: number) {
+  if (docStore.isPdfActive) {
+    const next = Math.max(25, Math.min(400, level))
+    docStore.pdfZoom = next
+    docStore.pdfFitWidth = false
+    ElMessage.success({ message: `缩放: ${next}%`, duration: 800 })
+    return
+  }
   zoomLevel.value = Math.max(50, Math.min(200, level))
   document.documentElement.style.setProperty('--editor-zoom', String(zoomLevel.value / 100))
   const editor = editorRef.value?.getEditorElement?.()
@@ -253,7 +271,8 @@ function bootstrapEditor() {
       try {
         editorRef.value?.flushSync?.()
         const doc = docStore.activeDocument
-        if (doc?.filePath) {
+        // PDF 只读，不写回（content 为空，写回会清空源文件）
+        if (doc?.filePath && doc?.kind !== 'pdf') {
           await tauriAPI.saveBeforeClose(doc.filePath, doc.content)
         }
         docStore.saveToLocal()
@@ -266,6 +285,8 @@ function bootstrapEditor() {
     try {
       editorRef.value?.flushSync?.()
       const doc = docStore.activeDocument
+      // PDF 只读，不写回（content 为空，写回会清空源文件）
+      if (doc?.kind === 'pdf') { docStore.saveToLocal(); return }
       if (doc?.filePath && (window as any).electronAPI?.writeFile) {
         await (window as any).electronAPI.writeFile(doc.filePath, doc.content)
       }
@@ -320,10 +341,22 @@ function bootstrapEditor() {
       }
     })
 
-    window.electronAPI!.onOpenFile?.(({ title, content, filePath }: { title: string; content: string; filePath?: string }) => {
-      docStore.importDocument(title, content, filePath)
-      ElMessage.success(`已打开: ${title}`)
-      devLog.info(`打开文件: ${filePath || title}`)
+    window.electronAPI!.onOpenFile?.((payload: { title: string; content: string; filePath?: string; kind?: string; base64?: string; error?: string }) => {
+      // 打开失败的文件（过大等）：提示并放弃
+      if (payload.error) {
+        ElMessage.error(payload.error)
+        return
+      }
+      // PDF 文档：字节走会话内存，进入只读预览
+      if (payload.kind === 'pdf' && payload.base64) {
+        docStore.importPdfDocument(payload.title, payload.base64, payload.filePath)
+        ElMessage.success(`已打开: ${payload.title}`)
+        devLog.info(`打开 PDF 文件: ${payload.filePath || payload.title}`)
+        return
+      }
+      docStore.importDocument(payload.title, payload.content, payload.filePath)
+      ElMessage.success(`已打开: ${payload.title}`)
+      devLog.info(`打开文件: ${payload.filePath || payload.title}`)
     })
   }
 
@@ -382,6 +415,11 @@ async function handleExport(type: string) {
   }
   const doc = docStore.activeDocument
   if (!doc) return
+  // PDF 只读预览不支持导出
+  if (doc.kind === 'pdf') {
+    ElMessage.info('PDF 阅读模式不支持导出')
+    return
+  }
   // 先同步最新编辑内容，确保导出的是最新
   editorRef.value?.flushSync?.()
   // 退出代码块编辑态并恢复语法高亮，避免导出裸文本/编辑态边框

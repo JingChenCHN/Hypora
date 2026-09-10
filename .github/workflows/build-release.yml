@@ -29,6 +29,18 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Fetch llama.cpp runtime (built-in assistant)
+        # 内置助手：拉取 llama.cpp 双后端（Vulkan/CPU）到 ai-engine/win-x64/，
+        # electron-builder extraResources 会将其打进安装包（模型 GGUF 不进包，首启按需下载）。
+        run: node scripts/fetch-llamacpp.cjs --only-win
+
+      - name: Verify engine payload
+        shell: pwsh
+        run: |
+          Get-ChildItem -Recurse ai-engine/win-x64 -Filter llama-server.exe | Select-Object FullName, Length
+          if (-not (Test-Path 'ai-engine/win-x64/vulkan/llama-server.exe')) { throw 'missing vulkan/llama-server.exe' }
+          if (-not (Test-Path 'ai-engine/win-x64/cpu/llama-server.exe')) { throw 'missing cpu/llama-server.exe' }
+
       - name: Build frontend + package EXE
         # 直接 vite build（绕过 vue-tsc -b，其针对 vite.config.ts 的 verbatimModuleSyntax 报错是预存的，
         # 不影响产物）+ electron-builder 打包 Windows x64（NSIS 安装版 + 便携版）。
@@ -55,11 +67,11 @@ jobs:
           body: |
             ## Hypora ${{ github.ref_name }}
 
-            内容优先、UI 隐退的所见即所得 Markdown 编辑器，冷淡单色设计语言，内置 AI 助手（DeepSeek / GLM 识图 / 本地 LLM）。
+            内容优先、UI 隐退的所见即所得 Markdown 编辑器，冷淡单色设计语言，内置 AI 助手（DeepSeek / GLM 识图 / 内置本地助手）。
 
             ### 本版本亮点
             - **所见即所得**：输入 Markdown 语法实时渲染，无左右分栏
-            - **AI 助手**：选中文字改写 / 解释 / 翻译 / 扩写 / 总结 / 文档问答；GLM 识图提取图片内容；本地 LLM
+            - **AI 助手**：选中文字改写 / 解释 / 翻译 / 扩写 / 总结 / 文档问答；GLM 识图提取图片内容；**内置本地助手**（llama.cpp Vulkan/CPU 双后端，MiniCPM 模型按需下载，无需手动配置）
             - **五套主题**：冷淡单色设计语言（浅色白 / 暗色黑 / 米色护眼 / 极简灰 / 冰雪）
             - **多格式导出**：Markdown / HTML / PDF / 图片（含 Hypora 签名）
             - **桌面增强**：无边框窗口、交通灯、窗口置顶、.md 双击关联

@@ -24,7 +24,7 @@ interface ElectronAPI {
     openExternal: (url: string) => Promise<void>
   }
   onMenuAction?: (cb: (action: string) => void) => void
-  onOpenFile?: (cb: (data: { title: string; content: string }) => void) => void
+  onOpenFile?: (cb: (data: { title: string; content: string; kind?: string; base64?: string; error?: string }) => void) => void
   showSaveDialog?: (name: string) => Promise<any>
   writeFile?: (path: string, content: string) => Promise<{ success: boolean; error?: string }>
   // ===== 窗口置顶（always-on-top）=====

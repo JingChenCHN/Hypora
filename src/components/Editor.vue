@@ -1,8 +1,23 @@
 <template>
   <div class="editor-container" ref="containerRef">
+    <!-- PDF 阅读视图：kind='pdf' 的文档以只读形态占据编辑区（优先级高于源码模式） -->
+    <PdfViewer
+      v-if="isPdfDoc"
+      :base64="pdfBase64"
+      :zoom="docStore.pdfZoom"
+      :fit-width="docStore.pdfFitWidth"
+      :title="docStore.activeDocument?.title"
+      @loaded="onPdfLoaded"
+      @page-change="onPdfPageChange"
+      @zoom-change="onPdfZoomChange"
+      @error="onPdfError"
+      @drop="handleDrop"
+      @dragover.prevent
+    />
+
     <!-- 所见即所得编辑模式 -->
     <div
-      v-if="!docStore.isSourceMode"
+      v-else-if="!docStore.isSourceMode"
       ref="editorRef"
       class="markdown-body"
       :class="{ 'typewriter-mode': docStore.typewriterMode, 'focus-mode': docStore.focusMode }"
@@ -61,12 +76,16 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onUnmounted, defineAsyncComponent } from 'vue'
+import { ElMessage } from 'element-plus'
 import { useDocumentStore } from '@/stores/document'
 import { mdToHtml, renderMermaid, extractOutline, handleImagePaste, insertMarkdown, htmlToMd, highlightCodeElement, normalizeMediaElements } from '@/utils/markdown'
-import type { OutlineItem } from '@/utils/markdown'
+import { readPdfFile } from '@/utils/export'
 import ContextMenu from './ContextMenu.vue'
 import MediaViewer from './MediaViewer.vue'
+
+// PDF 阅读器异步加载：pdf.js 依赖体积大，彻底移出首屏（含 worker）
+const PdfViewer = defineAsyncComponent(() => import('./PdfViewer.vue'))
 
 const emit = defineEmits<{
   (e: 'outlineUpdate', outline: OutlineItem[]): void
@@ -75,6 +94,25 @@ const emit = defineEmits<{
 }>()
 
 const docStore = useDocumentStore()
+
+// ===== PDF 文档（kind='pdf'）=====
+const isPdfDoc = computed(() => docStore.activeDocument?.kind === 'pdf')
+const pdfBase64 = computed(() => docStore.getPdfBase64(docStore.activeDocId) || '')
+
+function onPdfLoaded(n: number) {
+  docStore.pdfTotalPages = n
+  docStore.pdfPage = 1
+}
+function onPdfPageChange(n: number) {
+  docStore.pdfPage = n
+}
+function onPdfZoomChange(payload: { zoom: number; fitWidth: boolean }) {
+  docStore.pdfZoom = payload.zoom
+  docStore.pdfFitWidth = payload.fitWidth
+}
+function onPdfError(message: string) {
+  ElMessage.error(message)
+}
 
 const containerRef = ref<HTMLElement>()
 const editorRef = ref<HTMLElement>()
@@ -122,6 +160,13 @@ watch(() => docStore.activeDocId, (newId, oldId) => {
   }
   if (syncTimer) { clearTimeout(syncTimer); syncTimer = null }
   syncingFromInput = false
+  // PDF 文档：编辑器分支未挂载，跳过渲染/源码视图，仅复位大纲与统计
+  if (docStore.activeDocument?.kind === 'pdf') {
+    renderedContent.value = ''
+    emit('outlineUpdate', [])
+    emit('statsUpdate', { characters: 0, words: 0, lines: 0 })
+    return
+  }
   const content = docStore.activeDocument?.content ?? ''
   renderContent(content)
   // 源码模式下切换文档：为新文档重建折叠视图，textarea 重新自适应高度
@@ -133,6 +178,7 @@ watch(() => docStore.activeDocId, (newId, oldId) => {
 
 // 内容变化时渲染（用户输入触发的变化跳过，避免光标跳动）
 watch(() => docStore.activeDocument?.content, (newContent) => {
+  if (docStore.isPdfActive) return  // PDF 只读，无内容渲染
   if (syncingFromInput) {
     syncingFromInput = false
     return
@@ -246,8 +292,9 @@ function realOffsetToView(regions: ViewRegion[], r: number): number {
   return r + delta
 }
 
-// 源码模式切换时同步内容，并保持光标/视口位置（对标 Typora：操作处不变）
+// 源码模式切换时同步内容，并保持光标/视口位置（对标 Typora：操作富文本区不变）
 watch(() => docStore.isSourceMode, (isSource) => {
+  if (docStore.isPdfActive) return  // PDF 无源码形态，不响应
   if (isSource) {
     // 切到源码前：记录光标/选区所在的块与块内偏移，并同步内容到 store
     let startBlock: HTMLElement | null = null
@@ -613,8 +660,12 @@ function renderContent(content: string) {
   })
 }
 
-// 更新字数统计
+// 更新字数统计：PDF 文档输出全 0（Statusbar 改显示页码/缩放）
 function updateStats() {
+  if (docStore.isPdfActive) {
+    emit('statsUpdate', { characters: 0, words: 0, lines: 0 })
+    return
+  }
   const text = docStore.activeDocument?.content || ''
   const characters = text.length
   const words = text.trim() ? text.trim().split(/\s+/).length : 0
@@ -1384,6 +1435,21 @@ function trimTable(text: string): string {
 async function handleDrop(e: DragEvent) {
   e.preventDefault()
   const files = e.dataTransfer?.files
+
+  // PDF：拖入即作为独立文档打开（编辑器内与 PDF 视图内皆可）
+  if (files && files.length > 0) {
+    const pdfFile = Array.from(files).find(f => /\.pdf$/i.test(f.name) || f.type === 'application/pdf')
+    if (pdfFile) {
+      try {
+        const { title, base64 } = await readPdfFile(pdfFile)
+        docStore.importPdfDocument(title, base64, (pdfFile as any).path || undefined)
+        ElMessage.success(`已打开: ${title}`)
+      } catch (err: any) {
+        ElMessage.error('PDF 打开失败：' + (err?.message || '读取失败'))
+      }
+      return
+    }
+  }
 
   if (files && files.length > 0) {
     for (let i = 0; i < files.length; i++) {

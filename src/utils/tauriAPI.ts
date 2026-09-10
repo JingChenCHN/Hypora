@@ -6,6 +6,10 @@ export interface OpenFileResult {
   title: string
   content: string
   file_path: string
+  // PDF 支持：kind='pdf' 时 content 为空、base64 携带二进制（base64 编码），error 非空表示打开失败
+  kind?: string
+  base64?: string
+  error?: string
 }
 
 export const tauriAPI = {
@@ -65,7 +69,7 @@ export const tauriAPI = {
   },
 
   // 监听双击文件打开（Rust setup emit 'open-file'）
-  onOpenFile(cb: (data: { title: string; content: string; filePath: string }) => void) {
+  onOpenFile(cb: (data: { title: string; content: string; filePath: string; kind?: string; base64?: string; error?: string }) => void) {
     listen('open-file', (event: any) => cb(event.payload as any))
   },
 

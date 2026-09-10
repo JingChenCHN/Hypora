@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { streamChat, testConnection as testConn, type ChatMessage, type ContentPart } from '@/utils/deepseek'
+import { hasAiEngine, engineApi, type EnginePhase, type EngineStatus, type EngineConfig, type EngineDownloadState } from '@/utils/aiEngine'
 import { useAuthStore, authNeeded } from '@/stores/auth'
 import { chatGet, chatPut, type ChatPayload } from '@/utils/authApi'
 
@@ -54,6 +55,32 @@ export const useAIStore = defineStore('ai', () => {
   // 待发送的图片（base64 data URL），仅 GLM 识图模式使用，发送后清空
   const pendingImages = ref<string[]>([])
   let controller: AbortController | null = null
+
+  // ===== 内置本地助手（llama.cpp 引擎，仅 Windows Electron 桌面端）=====
+  // 引擎状态仅由主进程 IPC push 驱动；Web/Tauri 无引擎（hasAiEngine() false）时保持初值并走外部模式。
+  const enginePhase = ref<EnginePhase>('unknown')
+  const engineBackend = ref<'vulkan' | 'cpu' | null>(null)
+  const enginePort = ref<number | null>(null)
+  const engineError = ref<string | null>(null)
+  const engineModel = ref<EngineConfig | null>(null)
+  const engineDownload = ref<EngineDownloadState | null>(null)
+  // 本地引擎使用方式：managed=内置助手（主进程托管）；external=外部 llama-server（高级选项）
+  const localMode = ref<'managed' | 'external'>(hasAiEngine() ? 'managed' : 'external')
+  const engineRunning = computed(() => enginePhase.value === 'running')
+  const engineStarting = computed(() => enginePhase.value === 'starting')
+  // 托管端点：运行中用引擎协商出的实际端口（8899 被占时自动漂移），否则回落默认地址
+  const engineBaseUrl = computed(() => (engineRunning.value && enginePort.value ? `http://127.0.0.1:${enginePort.value}` : DEFAULT_BASE_LOCAL))
+  // 🔴🟢 状态点：运行中绿 / 失败红 / 其余灰（面板状态行与工具栏徽标共用）
+  const engineDot = computed(() => (engineRunning.value ? 'ok' : enginePhase.value === 'failed' ? 'err' : 'off'))
+  const engineStatusText = computed(() => {
+    switch (enginePhase.value) {
+      case 'running': return `运行中 · ${engineBackend.value === 'vulkan' ? 'GPU' : 'CPU'} :${enginePort.value ?? ''}`
+      case 'starting': return '启动中…'
+      case 'failed': return '启动失败'
+      case 'unknown': return '检测中…'
+      default: return engineModel.value && !engineModel.value.modelExists ? '未下载模型' : '已停止'
+    }
+  })
 
   // ===== 多会话（对话记录）=====
   // 每个会话独立的消息/思考链；登录用户整表持久化到服务器，桌面版持久化到 localStorage。
@@ -301,6 +328,10 @@ export const useAIStore = defineStore('ai', () => {
     baseUrl.value = b || (provider.value === 'local' ? DEFAULT_BASE_LOCAL : provider.value === 'glm' ? DEFAULT_BASE_GLM : DEFAULT_BASE_DEEPSEEK)
     const lm = localStorage.getItem('hypora_ai_localmodel')
     localModel.value = lm || ''
+    // 内置助手模式：默认 managed（有引擎时）；旧数据若改过 local baseUrl → 视为外部 llama-server 用户
+    const lmode = localStorage.getItem('hypora_ai_local_mode') as 'managed' | 'external' | null
+    localMode.value = lmode || (hasAiEngine() ? 'managed' : 'external')
+    if (provider.value === 'local' && b && b !== DEFAULT_BASE_LOCAL) localMode.value = 'external'
     // GLM key/model 独立持久化（与 DeepSeek key 分开），重启后恢复用户配置
     const gk = localStorage.getItem('hypora_ai_glmkey')
     if (gk) glmKey.value = gk
@@ -308,6 +339,7 @@ export const useAIStore = defineStore('ai', () => {
     if (gm) glmModel.value = gm
     const pv = localStorage.getItem('hypora_ai_panel')
     panelVisible.value = pv === 'true'
+    bindEngine()
     // 登录用户从服务器恢复多会话记录（App 侧保证 init 在会话确认后才调用）；
     // 桌面版/未登录从 localStorage 恢复（重启不丢会话），无存档时先备好一个空会话
     if (authNeeded() && authStore.me) void restoreChats()
@@ -327,6 +359,7 @@ export const useAIStore = defineStore('ai', () => {
     localStorage.setItem('hypora_ai_glmkey', glmKey.value)
     localStorage.setItem('hypora_ai_glmmodel', glmModel.value)
     localStorage.setItem('hypora_ai_panel', String(panelVisible.value))
+    localStorage.setItem('hypora_ai_local_mode', localMode.value)
   }
 
   // 切换引擎并重置 baseUrl 默认值
@@ -334,6 +367,54 @@ export const useAIStore = defineStore('ai', () => {
     provider.value = p
     baseUrl.value = p === 'local' ? DEFAULT_BASE_LOCAL : p === 'glm' ? DEFAULT_BASE_GLM : DEFAULT_BASE_DEEPSEEK
     saveToLocal()
+  }
+
+  // ===== 内置助手引擎控制 =====
+  function applyEngineStatus(s: EngineStatus | null) {
+    if (!s) return
+    enginePhase.value = s.phase
+    engineBackend.value = s.backend
+    enginePort.value = s.port
+    engineError.value = s.error
+  }
+
+  async function refreshEngineStatus() {
+    applyEngineStatus(await engineApi.status())
+  }
+
+  async function refreshEngineConfig() {
+    engineModel.value = await engineApi.config()
+  }
+
+  // 绑定主进程状态/下载推送并首次对账（Ctrl+R 重载渲染层后由 init 重新绑定）
+  function bindEngine() {
+    if (!hasAiEngine()) return
+    engineApi.onStatus(applyEngineStatus)
+    engineApi.onDownload((d) => {
+      engineDownload.value = d
+      // 下载结束（无论成败）刷新模型存在性：模型卡「已下载/未下载」即时翻转
+      if (d.phase === 'done' || d.phase === 'error') void refreshEngineConfig()
+    })
+    void refreshEngineStatus()
+    void refreshEngineConfig()
+  }
+
+  // 按需拉起引擎：幂等，等待进入 running（Vulkan→CPU 回落最长约 150s，超时判失败）
+  async function startEngine(): Promise<boolean> {
+    if (!hasAiEngine()) return false
+    if (enginePhase.value === 'running') return true
+    engineApi.start().catch(() => {}) // MODEL_MISSING / 启动失败经状态推送反映
+    const deadline = Date.now() + 150_000
+    while (Date.now() < deadline) {
+      if (enginePhase.value === 'running') return true
+      if (enginePhase.value === 'failed') return false
+      await new Promise((r) => setTimeout(r, 250))
+    }
+    return false
+  }
+
+  async function stopEngine() {
+    await engineApi.stop()
   }
 
   // ===== 图片管理（GLM 识图模式）=====
@@ -360,6 +441,11 @@ export const useAIStore = defineStore('ai', () => {
 
   async function testConnection(): Promise<{ ok: boolean; info?: string; error?: string }> {
     const isLocal = provider.value === 'local'
+    // 托管模式：端点健康已由状态点表达；未运行时给明确提示而非盲目探测
+    if (isLocal && hasAiEngine() && localMode.value === 'managed') {
+      if (!engineRunning.value) return { ok: false, error: '内置助手未运行（点击「启动」或发送消息自动拉起）' }
+      return await testConn(engineBaseUrl.value, undefined)
+    }
     return await testConn(baseUrl.value, isLocal ? undefined : apiKey.value)
   }
 
@@ -394,6 +480,14 @@ export const useAIStore = defineStore('ai', () => {
     const isLocal = provider.value === 'local'
     const isGlm = provider.value === 'glm'
     const hasImages = pendingImages.value.length > 0
+
+    // 托管模式判定：内置助手接管 local 提供方（external 或无引擎走旧外部路径）
+    const useManaged = isLocal && hasAiEngine() && localMode.value === 'managed'
+    if (useManaged && engineModel.value && !engineModel.value.modelExists) {
+      chat.messages.push({ role: 'assistant', content: '⚠️ 内置助手还没有模型文件，请在本面板「内置模型」卡片点击下载（默认 Q4_K_M 约 1.5 GB，或选 Q8_0 约 2.5 GB，下载完成后自动就绪）。' })
+      chat.reasonings.push('')
+      return
+    }
 
     if (isGlm) {
       if (!glmKey.value.trim()) {
@@ -435,6 +529,17 @@ export const useAIStore = defineStore('ai', () => {
       if (t) chat.title = t
     }
 
+    // 托管模式：先落占位再按需拉起引擎——面板显示「AI 正在思考…」的同时模型在后台加载
+    if (useManaged && !engineRunning.value) {
+      const ok = await startEngine()
+      if (!ok) {
+        chat.messages[aiIdx].content = `⚠️ 内置助手启动失败${engineError.value ? `：${engineError.value}` : ''}。可在面板「高级」区改用外部 llama-server。`
+        chat.reasonings[aiIdx] = ''
+        scheduleChatSave()
+        return
+      }
+    }
+
     loading.value = true
     controller = new AbortController()
     try {
@@ -447,9 +552,10 @@ export const useAIStore = defineStore('ai', () => {
         ...chat.messages.slice(0, aiIdx)
       ]
       await streamChat({
-        baseUrl: baseUrl.value,
+        // 托管模式用引擎协商出的实际端口；model 传 undefined → llama-server 使用 GGUF 内置模板
+        baseUrl: useManaged ? engineBaseUrl.value : baseUrl.value,
         apiKey: isLocal ? undefined : (isGlm ? glmKey.value : apiKey.value),
-        model: isLocal ? (localModel.value.trim() || undefined) : (isGlm ? glmModel.value : model.value),
+        model: useManaged ? undefined : (isLocal ? (localModel.value.trim() || undefined) : (isGlm ? glmModel.value : model.value)),
         messages: history,
         path: isGlm ? '/chat/completions' : undefined,
         thinking: !isLocal && !isGlm && thinking.value,
@@ -465,7 +571,10 @@ export const useAIStore = defineStore('ai', () => {
       if (e?.name === 'AbortError') {
         // 用户主动停止，保留已生成内容
       } else {
-        const hint = isLocal ? '\n\n（请确认 local-ai-engine 已启动：运行 启动.bat，使 llama-server 运行于该地址）'
+        // 子进程意外退出 → 立即刷新状态，状态点转红；提示文案区分托管/外部
+        if (useManaged) void refreshEngineStatus()
+        const hint = useManaged ? '\n\n（内置助手可能已停止，请在面板中点击「启动」重新拉起）'
+          : isLocal ? '\n\n（请确认外部 llama-server 正在运行于配置的地址）'
           : isGlm ? '\n\n（请确认 GLM API Key 有效，且网络可访问 open.bigmodel.cn）' : ''
         chat.messages[aiIdx].content += `\n\n⚠️ ${e?.message || e}${hint}`
       }
@@ -483,6 +592,10 @@ export const useAIStore = defineStore('ai', () => {
     apiKey, model, thinking, provider, baseUrl, localModel, glmKey, glmModel, panelVisible, messages, reasonings, loading, pendingImages,
     chats, activeChatId, activeChat,
     init, saveToLocal, setProvider, testConnection, togglePanel, clearMessages, stop, send, addImage, removeImage, clearImages,
+    // 内置助手：引擎状态与控制
+    enginePhase, engineBackend, enginePort, engineError, engineModel, engineDownload, localMode,
+    engineRunning, engineStarting, engineBaseUrl, engineDot, engineStatusText,
+    bindEngine, startEngine, stopEngine, refreshEngineStatus, refreshEngineConfig,
     newChat, switchChat, deleteChat, renameChat
   }
 })
