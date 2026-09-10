@@ -109,6 +109,12 @@ async function fetchOne(platform, backend, assetName) {
   const targetDir = path.join(AI_DIR, platform, backend)
   fs.mkdirSync(targetDir, { recursive: true })
   if (SKIP_DOWNLOAD) return
+  // 幂等：目标二进制已存在则跳过（构建链可反复调用而不重复下载）
+  const markerNow = process.platform === 'win32' || platform === 'win-x64' ? 'llama-server.exe' : 'llama-server'
+  if (fs.existsSync(path.join(targetDir, markerNow))) {
+    log(`${platform}/${backend} 已存在，跳过下载`)
+    return
+  }
 
   const archivePath = path.join(os.tmpdir(), `hypora-${assetName}`)
   const url = `${RELEASE_BASE}/${assetName}`

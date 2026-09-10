@@ -354,7 +354,24 @@ function scheduleReadSelected() {
   rafId = requestAnimationFrame(() => { rafId = null; readSelected() })
 }
 
+const docStore = useDocumentStore()
+const input = ref('')
+const configVisible = ref(false)
+const messagesRef = ref<HTMLElement>()
+const imgInputRef = ref<HTMLInputElement>()
+const connStatus = ref('')
+const connOk = ref(false)
+const glmConnStatus = ref('')
+const glmConnOk = ref(false)
+
+// ===== 内置本地助手（托管引擎）=====
+// 引擎能力门：仅 Windows Electron 桌面端为 true；Web/Tauri 恒为 false（不渲染任何引擎 UI）
+const hasEngine = hasAiEngine()
+// 高级折叠区（外部 llama-server 地址/模型/测试）默认收起
+const advOpen = ref(false)
+
 // 面板可见期间跟踪编辑区/面板的选区变化，刷新引用栏
+// 注意：immediate 回调在 setup 期间同步执行，必须位于 hasEngine/configVisible 声明之后（TDZ）
 let cleanupSelectionWatch: (() => void) | null = null
 watch(() => props.visible, (v) => {
   cleanupSelectionWatch?.()
@@ -377,21 +394,6 @@ watch(() => props.visible, (v) => {
   }
 }, { immediate: true })
 onBeforeUnmount(() => { cleanupSelectionWatch?.() })
-const docStore = useDocumentStore()
-const input = ref('')
-const configVisible = ref(false)
-const messagesRef = ref<HTMLElement>()
-const imgInputRef = ref<HTMLInputElement>()
-const connStatus = ref('')
-const connOk = ref(false)
-const glmConnStatus = ref('')
-const glmConnOk = ref(false)
-
-// ===== 内置本地助手（托管引擎）=====
-// 引擎能力门：仅 Windows Electron 桌面端为 true；Web/Tauri 恒为 false（不渲染任何引擎 UI）
-const hasEngine = hasAiEngine()
-// 高级折叠区（外部 llama-server 地址/模型/测试）默认收起
-const advOpen = ref(false)
 
 const dlPhase = computed(() => aiStore.engineDownload?.phase ?? 'idle')
 // 进度条宽度收敛到 0-100，避免异常推送把轨道撑爆
