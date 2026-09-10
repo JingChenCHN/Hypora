@@ -15,6 +15,7 @@ export interface EngineStatus {
   pid: number | null
   startedAt: number | null
   error: string | null
+  model?: string | null    // 当前/最近一次实际加载的模型
 }
 
 export interface EngineModelInfo {
@@ -31,7 +32,8 @@ export interface EngineConfig {
   models: EngineModelInfo[]
   defaultModel: string
   modelExists: boolean             // 兼容字段：任一模型就绪即 true
-  activeModel: string | null       // 下次 start 实际加载的模型（择取结果）
+  selectedModel: string | null     // 用户显式选择的模型（engine.json 持久化，二选一）
+  activeModel: string | null       // 下次 start 实际加载的模型（显式选择优先）
   binRoot: string
   binaries: { vulkan: boolean; cpu: boolean }
 }
@@ -54,6 +56,7 @@ interface ElectronAiEngineApi {
   aiEngineConfig(): Promise<EngineConfig>
   aiEngineDownload(modelName?: string): Promise<EngineDownloadState>
   aiEngineDownloadCancel(): Promise<EngineDownloadState>
+  aiEngineSetModel(modelName: string): Promise<EngineStatus>
   aiEngineOpenModelsDir(): Promise<{ ok: boolean; error?: string }>
   onAiEngineStatus(cb: (s: EngineStatus) => void): () => void
   onAiEngineDownloadProgress(cb: (d: EngineDownloadState) => void): () => void
@@ -81,6 +84,7 @@ export const engineApi = {
   stop: (): Promise<EngineStatus | null> => api()?.aiEngineStop() ?? Promise.resolve(null),
   download: (modelName?: string): Promise<EngineDownloadState | null> => api()?.aiEngineDownload(modelName) ?? Promise.resolve(null),
   downloadCancel: (): Promise<EngineDownloadState | null> => api()?.aiEngineDownloadCancel() ?? Promise.resolve(null),
+  setModel: (modelName: string): Promise<EngineStatus | null> => api()?.aiEngineSetModel(modelName) ?? Promise.resolve(null),
   openModelsDir: (): Promise<{ ok: boolean; error?: string } | null> => api()?.aiEngineOpenModelsDir() ?? Promise.resolve(null),
   // 订阅推送；无 API 时返回空函数（消费方无脑调用即可）
   onStatus: (cb: (s: EngineStatus) => void): (() => void) => api()?.onAiEngineStatus(cb) ?? (() => {}),

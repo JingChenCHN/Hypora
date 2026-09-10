@@ -165,11 +165,13 @@
                     {{ dlPhase === 'error' && dlModelName === m.name ? '重试下载' : '下载' }}
                   </el-button>
                   <el-button v-else-if="rowState(m) === 'downloading'" size="small" class="engine-btn" @click="onDownloadCancel">暂停</el-button>
+                  <el-button v-else-if="rowState(m) === 'ready'" size="small" class="engine-btn" :disabled="aiStore.engineStarting" @click="onUseModel(m.name)">使用</el-button>
                   <span v-else-if="rowState(m) === 'paused-other'" class="model-quiet">另一模型下载中</span>
-                  <span v-else class="model-quiet model-ok">已就绪</span>
+                  <span v-else class="model-quiet model-ok">使用中</span>
                 </div>
                 <div class="model-card-size">{{ m.exists ? `已下载 · ${formatBytes(m.size)}` : `未下载 · 约 ${formatBytes(m.bytes)}` }}</div>
               </div>
+              <div class="model-card-hint">两个模型二选一运行：「使用」即切换；引擎运行中切换会自动重启生效</div>
               <template v-if="dlPhase === 'downloading'">
                 <div class="dl-track"><div class="dl-fill" :style="{ width: dlPercent + '%' }"></div></div>
                 <div class="dl-readout">
@@ -404,8 +406,11 @@ const dlPercent = computed(() => {
 // 双模型：config.models 驱动模型卡；正在下载的模型名来自下载推送
 const modelList = computed(() => aiStore.engineModel?.models ?? [])
 const dlModelName = computed(() => aiStore.engineDownload?.model ?? null)
-// 行状态：就绪 / 本模型下载中（暂停）/ 他模型下载中（排队提示）/ 可下载（含失败重试）
-function rowState(m: { name: string; exists: boolean }): 'ready' | 'downloading' | 'paused-other' | 'can-download' {
+// 行状态：使用中（引擎实际加载）/ 就绪可切换 / 本模型下载中（暂停）/ 他模型下载中（排队提示）/ 可下载（含失败重试）
+// 运行中看状态推送的 model（真实加载者），停止时看 config.activeModel（下次启动者）
+function rowState(m: { name: string; exists: boolean }): 'active' | 'ready' | 'downloading' | 'paused-other' | 'can-download' {
+  const current = aiStore.engineRunning ? aiStore.engineActiveModel : aiStore.engineModel?.activeModel
+  if (m.exists && current === m.name) return 'active'
   if (m.exists) return 'ready'
   if (dlPhase.value === 'downloading') return dlModelName.value === m.name ? 'downloading' : 'paused-other'
   return 'can-download'
@@ -420,6 +425,12 @@ async function onStartEngine() {
 function onDownload(name?: string) {
   // 下载进度由主进程推送写入 aiStore.engineDownload，这里只负责发起（name 缺省用引擎默认模型）
   void engineApi.download(name)
+}
+// 二选一切换运行模型：主进程持久化选择，运行中会自动重启以新模型生效
+async function onUseModel(name: string) {
+  await engineApi.setModel(name)
+  void aiStore.refreshEngineStatus()
+  void aiStore.refreshEngineConfig()
 }
 function onDownloadCancel() {
   void engineApi.downloadCancel()
@@ -1073,6 +1084,11 @@ function copyText(text: string) {
   }
   .model-ok {
     color: var(--el-color-success);
+  }
+  .model-card-hint {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 8px;
   }
   /* —— 下载进度：2px 方角轨道，墨色填充 —— */
   .dl-track {

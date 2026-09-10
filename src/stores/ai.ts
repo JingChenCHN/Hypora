@@ -64,6 +64,7 @@ export const useAIStore = defineStore('ai', () => {
   const engineError = ref<string | null>(null)
   const engineModel = ref<EngineConfig | null>(null)
   const engineDownload = ref<EngineDownloadState | null>(null)
+  const engineActiveModel = ref<string | null>(null)   // 引擎当前实际加载的模型（状态推送）
   // 本地引擎使用方式：managed=内置助手（主进程托管）；external=外部 llama-server（高级选项）
   const localMode = ref<'managed' | 'external'>(hasAiEngine() ? 'managed' : 'external')
   const engineRunning = computed(() => enginePhase.value === 'running')
@@ -74,7 +75,7 @@ export const useAIStore = defineStore('ai', () => {
   const engineDot = computed(() => (engineRunning.value ? 'ok' : enginePhase.value === 'failed' ? 'err' : 'off'))
   const engineStatusText = computed(() => {
     switch (enginePhase.value) {
-      case 'running': return `运行中 · ${engineBackend.value === 'vulkan' ? 'GPU' : 'CPU'} :${enginePort.value ?? ''}`
+      case 'running': return `运行中 · ${engineBackend.value === 'vulkan' ? 'GPU' : 'CPU'} :${enginePort.value ?? ''}${engineActiveModel.value ? ` · ${engineActiveModel.value.replace(/\.gguf$/i, '')}` : ''}`
       case 'starting': return '启动中…'
       case 'failed': return '启动失败'
       case 'unknown': return '检测中…'
@@ -376,6 +377,7 @@ export const useAIStore = defineStore('ai', () => {
     engineBackend.value = s.backend
     enginePort.value = s.port
     engineError.value = s.error
+    engineActiveModel.value = s.model ?? null
   }
 
   async function refreshEngineStatus() {
@@ -593,7 +595,7 @@ export const useAIStore = defineStore('ai', () => {
     chats, activeChatId, activeChat,
     init, saveToLocal, setProvider, testConnection, togglePanel, clearMessages, stop, send, addImage, removeImage, clearImages,
     // 内置助手：引擎状态与控制
-    enginePhase, engineBackend, enginePort, engineError, engineModel, engineDownload, localMode,
+    enginePhase, engineBackend, enginePort, engineError, engineModel, engineDownload, engineActiveModel, localMode,
     engineRunning, engineStarting, engineBaseUrl, engineDot, engineStatusText,
     bindEngine, startEngine, stopEngine, refreshEngineStatus, refreshEngineConfig,
     newChat, switchChat, deleteChat, renameChat

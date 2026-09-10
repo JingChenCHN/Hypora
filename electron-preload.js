@@ -33,6 +33,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   aiEngineConfig: () => ipcRenderer.invoke('ai-engine:get-config'),
   aiEngineDownload: (modelName) => ipcRenderer.invoke('ai-engine:download', modelName),
   aiEngineDownloadCancel: () => ipcRenderer.invoke('ai-engine:download-cancel'),
+  aiEngineSetModel: (modelName) => ipcRenderer.invoke('ai-engine:set-model', modelName),
   aiEngineOpenModelsDir: () => ipcRenderer.invoke('ai-engine:open-models-dir'),
   // 订阅主进程状态推送；返回取消订阅函数（面板重挂载时防重复监听）
   onAiEngineStatus: (callback) => {

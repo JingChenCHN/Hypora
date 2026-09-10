@@ -122,6 +122,7 @@ function snapshot() {
   return {
     phase, backend, port,
     baseUrl: phase === 'running' && port ? `http://127.0.0.1:${port}` : null,
+    model: activeModel,
     pid, startedAt, error
   }
 }
@@ -290,11 +291,41 @@ function pickModel() {
   return null
 }
 
+// 用户显式选择的运行模型（engine.json 持久化，二选一）；文件失效时回落自动择取
+let selectedModel = null
+try { selectedModel = readEngineJson().selectedModel ?? null } catch { selectedModel = null }
+
+// 有效择取：显式选择优先（须过完整性校验），否则默认优先自动选
+function resolveSelection() {
+  if (selectedModel && MODELS[selectedModel] && modelFileOk(selectedModel)) return selectedModel
+  return pickModel()
+}
+
+// 用户选择运行其一：持久化偏好；引擎在跑/启动中则等 stop 收尾后自动以新模型重启
+function setModel(name) {
+  if (!name || !MODELS[name]) {
+    log('WARN', `忽略未知模型选择: ${name}`)
+    return snapshot()
+  }
+  selectedModel = name
+  writeEngineJson({ selectedModel: name })
+  log('INFO', `已选择运行模型: ${name}`)
+  if (phase === 'running' || phase === 'starting') {
+    stop()
+    const t = setInterval(() => {
+      if (phase === 'stopping') return
+      clearInterval(t)
+      start().catch(() => {})
+    }, 120)
+  }
+  return snapshot()
+}
+
 async function start() {
   if (phase === 'starting' || phase === 'running') return snapshot()   // 幂等
 
-  // 择模型：默认 Q4_K_M 优先，其次任一已下载；一个都没有 → phase 保持 stopped，抛 MODEL_MISSING 让渲染层弹下载卡
-  const chosen = pickModel()
+  // 择模型：用户显式选择优先，其次默认 Q4_K_M、任一已下载；一个都没有 → phase 保持 stopped，抛 MODEL_MISSING 让渲染层弹下载卡
+  const chosen = resolveSelection()
   if (!chosen) {
     phase = 'stopped'
     error = null
@@ -577,9 +608,10 @@ function getConfig() {
   return {
     models,
     defaultModel: DEFAULT_MODEL,
-    // 兼容字段：任一模型完整下载即视为就绪；activeModel 为下次 start 实际加载者
+    // 兼容字段：任一模型完整下载即视为就绪；activeModel 为下次 start 实际加载者（显式选择优先）
     modelExists: models.some((m) => m.exists),
-    activeModel: pickModel(),
+    selectedModel: selectedModel && MODELS[selectedModel] ? selectedModel : null,
+    activeModel: resolveSelection(),
     binRoot: binRoot(),
     binaries: { vulkan: fs.existsSync(exePathOf('vulkan')), cpu: fs.existsSync(exePathOf('cpu')) }
   }
@@ -613,10 +645,12 @@ function initAiEngine(loggerFn) {
     handle('ai-engine:get-config', () => getConfig())
     handle('ai-engine:download', (_e, modelName) => downloadModel(modelName))
     handle('ai-engine:download-cancel', () => downloadCancel())
+    handle('ai-engine:set-model', (_e, name) => setModel(name))
     handle('ai-engine:open-models-dir', () => openModelsDir())
   }
   // downloadModel/downloadCancel 供 harness（纯 Node）直驱；渲染层仍走 IPC 通道
-  return { start, stop, kill, snapshot, getConfig, downloadModel, downloadCancel }
+  // setModel 供 harness（纯 Node）直驱；渲染层仍走 IPC 通道
+  return { start, stop, kill, snapshot, getConfig, downloadModel, downloadCancel, setModel }
 }
 
 module.exports = { initAiEngine }
