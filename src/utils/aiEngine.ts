@@ -18,21 +18,31 @@ export interface EngineStatus {
   model?: string | null    // 当前/最近一次实际加载的模型
 }
 
-export interface EngineModelInfo {
+// 模型目录扫描出的本地模型（GGUF 魔数校验通过，均可选用运行）
+export interface EngineLocalModel {
+  name: string
+  size: number
+  isDefault: boolean        // 与内置默认模型同名
+}
+
+// 内置下载目录（注册表）：url/bytes 用于按需下载与完整性校验
+export interface EngineCatalogModel {
   name: string
   url: string
   bytes: number        // 预期字节数（完整性校验基准，也是下载量预估）
   isDefault: boolean
-  exists: boolean      // 文件存在且字节数严格匹配
+  present: boolean     // 本地已存在且字节数严格匹配
   size: number         // 实际字节数（未下载为 0）
 }
 
 export interface EngineConfig {
-  // 双模型：Q4_K_M（默认，体积小）+ Q8_0（保留，精度更高）
-  models: EngineModelInfo[]
+  // 目录扫描：models/ 下所有 GGUF（用户自放的模型同样可选）
+  models: EngineLocalModel[]
+  // 内置下载目录：Q4_K_M（默认）+ Q8_0；本地已有者由渲染层过滤不重复展示
+  catalog: EngineCatalogModel[]
   defaultModel: string
-  modelExists: boolean             // 兼容字段：任一模型就绪即 true
-  selectedModel: string | null     // 用户显式选择的模型（engine.json 持久化，二选一）
+  modelExists: boolean             // 兼容字段：目录内有可运行模型即 true
+  selectedModel: string | null     // 用户显式选择的模型（engine.json 持久化）
   activeModel: string | null       // 下次 start 实际加载的模型（显式选择优先）
   binRoot: string
   binaries: { vulkan: boolean; cpu: boolean }

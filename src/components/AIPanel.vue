@@ -161,17 +161,25 @@
                   <span class="model-card-name">{{ m.name }}</span>
                   <span v-if="m.isDefault" class="model-tag">默认</span>
                   <span class="flex-spacer"></span>
-                  <el-button v-if="rowState(m) === 'can-download'" size="small" class="engine-btn" @click="onDownload(m.name)">
-                    {{ dlPhase === 'error' && dlModelName === m.name ? '重试下载' : '下载' }}
-                  </el-button>
-                  <el-button v-else-if="rowState(m) === 'downloading'" size="small" class="engine-btn" @click="onDownloadCancel">暂停</el-button>
-                  <el-button v-else-if="rowState(m) === 'ready'" size="small" class="engine-btn" :disabled="aiStore.engineStarting" @click="onUseModel(m.name)">使用</el-button>
-                  <span v-else-if="rowState(m) === 'paused-other'" class="model-quiet">另一模型下载中</span>
+                  <el-button v-if="rowState(m) === 'ready'" size="small" class="engine-btn" :disabled="aiStore.engineStarting" @click="onUseModel(m.name)">使用</el-button>
                   <span v-else class="model-quiet model-ok">使用中</span>
                 </div>
-                <div class="model-card-size">{{ m.exists ? `已下载 · ${formatBytes(m.size)}` : `未下载 · 约 ${formatBytes(m.bytes)}` }}</div>
+                <div class="model-card-size">已下载 · {{ formatBytes(m.size) }}</div>
               </div>
-              <div class="model-card-hint">两个模型二选一运行：「使用」即切换；引擎运行中切换会自动重启生效</div>
+              <div v-for="c in downloadList" :key="c.name" class="model-item">
+                <div class="model-item-main">
+                  <span class="model-card-name">{{ c.name }}</span>
+                  <span v-if="c.isDefault" class="model-tag">默认</span>
+                  <span class="flex-spacer"></span>
+                  <el-button v-if="dlState(c) === 'can-download'" size="small" class="engine-btn" @click="onDownload(c.name)">
+                    {{ dlPhase === 'error' && dlModelName === c.name ? '重试下载' : '下载' }}
+                  </el-button>
+                  <el-button v-else-if="dlState(c) === 'downloading'" size="small" class="engine-btn" @click="onDownloadCancel">暂停</el-button>
+                  <span v-else class="model-quiet">另一模型下载中</span>
+                </div>
+                <div class="model-card-size">未下载 · 约 {{ formatBytes(c.bytes) }}</div>
+              </div>
+              <div class="model-card-hint">目录内所有 GGUF 模型均可选用：「使用」即切换，运行中切换会自动重启生效</div>
               <template v-if="dlPhase === 'downloading'">
                 <div class="dl-track"><div class="dl-fill" :style="{ width: dlPercent + '%' }"></div></div>
                 <div class="dl-readout">
@@ -403,16 +411,21 @@ const dlPercent = computed(() => {
   const p = aiStore.engineDownload?.percent ?? 0
   return Math.min(100, Math.max(0, Math.round(p)))
 })
-// 双模型：config.models 驱动模型卡；正在下载的模型名来自下载推送
+// 模型卡：config.models = 目录扫描出的本地模型（皆可选运行）；正在下载的模型名来自下载推送
 const modelList = computed(() => aiStore.engineModel?.models ?? [])
 const dlModelName = computed(() => aiStore.engineDownload?.model ?? null)
-// 行状态：使用中（引擎实际加载）/ 就绪可切换 / 本模型下载中（暂停）/ 他模型下载中（排队提示）/ 可下载（含失败重试）
-// 运行中看状态推送的 model（真实加载者），停止时看 config.activeModel（下次启动者）
-function rowState(m: { name: string; exists: boolean }): 'active' | 'ready' | 'downloading' | 'paused-other' | 'can-download' {
+// 可下载区：内置目录条目中本地尚未存在的
+const downloadList = computed(() =>
+  (aiStore.engineModel?.catalog ?? []).filter((c) => !modelList.value.some((m) => m.name === c.name))
+)
+// 本地模型行状态：使用中（运行中看状态推送的 model，停止时看 config.activeModel）/ 可切换
+function rowState(m: { name: string }): 'active' | 'ready' {
   const current = aiStore.engineRunning ? aiStore.engineActiveModel : aiStore.engineModel?.activeModel
-  if (m.exists && current === m.name) return 'active'
-  if (m.exists) return 'ready'
-  if (dlPhase.value === 'downloading') return dlModelName.value === m.name ? 'downloading' : 'paused-other'
+  return current === m.name ? 'active' : 'ready'
+}
+// 下载行状态：本条目下载中（暂停）/ 其他条目下载中（排队提示）/ 可下载（含失败重试）
+function dlState(c: { name: string }): 'downloading' | 'paused-other' | 'can-download' {
+  if (dlPhase.value === 'downloading') return dlModelName.value === c.name ? 'downloading' : 'paused-other'
   return 'can-download'
 }
 

@@ -282,29 +282,58 @@ function modelFileOk(name) {
   } catch { return false }
 }
 
-// 择模型：默认优先（已就绪才作数），其次任一已就绪；都没有返回 null
+// 择模型：默认优先（已就绪才作数），其次任一注册表模型，再其次目录内任一模型；都没有返回 null
 function pickModel() {
   if (modelFileOk(DEFAULT_MODEL)) return DEFAULT_MODEL
   for (const name of Object.keys(MODELS)) {
     if (modelFileOk(name)) return name
   }
-  return null
+  const locals = scanLocalModels()
+  return locals.length ? locals[0].name : null
 }
 
-// 用户显式选择的运行模型（engine.json 持久化，二选一）；文件失效时回落自动择取
+// 扫描模型目录：所有 GGUF 魔数校验通过的文件皆为可选模型（不限于内置下载目录，用户自放模型同样可选）
+function scanLocalModels() {
+  const dir = modelDir()
+  let entries = []
+  try { entries = fs.readdirSync(dir).filter((f) => f.toLowerCase().endsWith('.gguf')) } catch { return [] }
+  const out = []
+  for (const name of entries) {
+    try {
+      const fp = modelPathOf(name)
+      const st = fs.statSync(fp)
+      if (!st.isFile() || st.size < 4) continue
+      const head = Buffer.alloc(4)
+      const fd = fs.openSync(fp, 'r')
+      fs.readSync(fd, head, 0, 4, 0)
+      fs.closeSync(fd)
+      if (head.toString('latin1') !== 'GGUF') continue
+      out.push({ name, size: st.size, isDefault: name === DEFAULT_MODEL })
+    } catch { /* 跳过不可读文件 */ }
+  }
+  out.sort((a, b) => a.name.localeCompare(b.name))
+  return out
+}
+
+// 可运行判定：目录扫描（GGUF 校验）通过即可；注册表模型的严格字节校验只用于下载完整性
+function isRunnableModel(name) {
+  return !!name && scanLocalModels().some((m) => m.name === name)
+}
+
+// 用户显式选择的运行模型（engine.json 持久化）；文件失效时回落自动择取
 let selectedModel = null
 try { selectedModel = readEngineJson().selectedModel ?? null } catch { selectedModel = null }
 
-// 有效择取：显式选择优先（须过完整性校验），否则默认优先自动选
+// 有效择取：显式选择优先（目录内 GGUF 校验通过即可），否则默认优先自动选
 function resolveSelection() {
-  if (selectedModel && MODELS[selectedModel] && modelFileOk(selectedModel)) return selectedModel
+  if (selectedModel && isRunnableModel(selectedModel)) return selectedModel
   return pickModel()
 }
 
 // 用户选择运行其一：持久化偏好；引擎在跑/启动中则等 stop 收尾后自动以新模型重启
 function setModel(name) {
-  if (!name || !MODELS[name]) {
-    log('WARN', `忽略未知模型选择: ${name}`)
+  if (!name || !isRunnableModel(name)) {
+    log('WARN', `忽略不可用的模型选择: ${name}`)
     return snapshot()
   }
   selectedModel = name
@@ -599,18 +628,20 @@ function finishDownload(token, partPath) {
 
 // ============ 配置查询 ============
 function getConfig() {
-  const models = Object.entries(MODELS).map(([name, m]) => {
+  const local = scanLocalModels()
+  const catalog = Object.entries(MODELS).map(([name, m]) => {
     const fp = modelPathOf(name)
     let size = 0
     try { if (fs.existsSync(fp)) size = fs.statSync(fp).size } catch { size = 0 }
-    return { name, url: m.url, bytes: m.bytes, isDefault: !!m.isDefault, exists: modelFileOk(name), size }
+    return { name, url: m.url, bytes: m.bytes, isDefault: !!m.isDefault, present: modelFileOk(name), size }
   })
   return {
-    models,
+    models: local,        // 模型目录实际存在的可运行模型（GGUF 校验通过）
+    catalog,              // 内置下载目录（注册表）；本地已有者由渲染层过滤
     defaultModel: DEFAULT_MODEL,
-    // 兼容字段：任一模型完整下载即视为就绪；activeModel 为下次 start 实际加载者（显式选择优先）
-    modelExists: models.some((m) => m.exists),
-    selectedModel: selectedModel && MODELS[selectedModel] ? selectedModel : null,
+    // 兼容字段：目录内有可运行模型即视为就绪；activeModel 为下次 start 实际加载者（显式选择优先）
+    modelExists: local.length > 0,
+    selectedModel: selectedModel && isRunnableModel(selectedModel) ? selectedModel : null,
     activeModel: resolveSelection(),
     binRoot: binRoot(),
     binaries: { vulkan: fs.existsSync(exePathOf('vulkan')), cpu: fs.existsSync(exePathOf('cpu')) }
