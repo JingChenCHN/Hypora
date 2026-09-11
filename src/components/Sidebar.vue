@@ -52,7 +52,7 @@
         </div>
         <div class="doc-list">
           <div
-            v-for="doc in docStore.documents"
+            v-for="doc in sortedDocs"
             :key="doc.id"
             class="doc-item"
             :class="{ 'active': doc.id === docStore.activeDocId, 'unsaved': !doc.isSaved }"
@@ -71,6 +71,9 @@
                   >未缓存</span>
                 </div>
                 <div class="doc-time">{{ formatTime(doc.updateTime) }}</div>
+                <div class="doc-path" :title="doc.filePath || '未保存到本地，仅存于应用缓存'">
+                  {{ doc.filePath || '未保存到本地' }}
+                </div>
               </div>
             </div>
             <el-dropdown trigger="click" @command="(cmd) => handleDocCommand(cmd, doc.id)" @click.stop>
@@ -182,16 +185,16 @@ function scrollToHeading(id: string) {
   }
 }
 
-// 格式化时间
-function formatTime(timestamp: number) {
-  const date = new Date(timestamp)
-  const now = new Date()
-  const isToday = date.toDateString() === now.toDateString()
+// 文档列表按更新时间倒序（最近的排最上）；不动 store 内顺序，仅视图层排序
+const sortedDocs = computed(() =>
+  [...docStore.documents].sort((a, b) => (b.updateTime - a.updateTime) || (b.createTime - a.createTime))
+)
 
-  if (isToday) {
-    return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
-  }
-  return date.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
+// 格式化时间：完整 年-月-日 时:分:秒（tabular-nums 对齐）
+function formatTime(timestamp: number) {
+  const d = new Date(timestamp)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
 }
 
 // 开始重命名
@@ -456,6 +459,17 @@ function handleDocCommand(command: string, id: string) {
               font-size: 12px;
               color: var(--text-muted);
               margin-top: 2px;
+              font-variant-numeric: tabular-nums;
+            }
+
+            .doc-path {
+              font-size: 11px;
+              color: var(--text-muted);
+              margin-top: 1px;
+              opacity: 0.85;
+              white-space: nowrap;
+              overflow: hidden;
+              text-overflow: ellipsis;
             }
           }
         }
