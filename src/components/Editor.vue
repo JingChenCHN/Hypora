@@ -145,7 +145,7 @@ let isUndoing = false
 
 // 打开磁盘文档后向主进程同步其所在目录：hypora-asset:// 协议读取范围收敛于此（安全边界）。
 // 声明在 activeDocId watch 之前 —— immediate 回调按声明顺序执行，保证打开文档渲染出
-// <img> 前，主进程已拿到目录（set-doc-base-dir 先于首个协议请求过桥）。
+// img 标签前，主进程已拿到目录（set-doc-base-dir 先于首个协议请求过桥）。
 watch(() => docStore.activeDocument?.filePath, (p) => {
   window.electronAPI?.setDocBaseDir?.(p ? dirOfDocPath(p) : null)
 }, { immediate: true })

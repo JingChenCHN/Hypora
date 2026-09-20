@@ -57,7 +57,7 @@ export function rewriteSrcs(html: string, fn: (src: string) => string): string {
   return html.replace(SRC_ATTR_RE, (_m, head: string, quote: string, src: string) => `${head}${quote}${fn(src)}${quote}`)
 }
 
-/** 渲染前：相对引用 → 协议地址（覆盖 marked 输出的 <img> 与文中原始 HTML 媒体） */
+/** 渲染前：相对引用 → 协议地址（覆盖 marked 输出的 img 标签与文中原始 HTML 媒体） */
 export function resolveAssetSrcs(html: string): string {
   if (!fileModeEnabled()) return html
   return rewriteSrcs(html, toDisplaySrc)
