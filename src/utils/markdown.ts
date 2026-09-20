@@ -657,26 +657,35 @@ export async function handleImagePaste(file: File): Promise<string> {
 
 export interface ImageInsertResult { domSrc: string; mdSrc: string; asFile: boolean; error?: string }
 
-// 图片插入统一入口：先走既有压缩链路（尊重图片设置），桌面文件模式下落盘文档同目录 assets/，
-// Markdown 存相对引用；Web/Tauri/未保存文档/写失败 → 回退 base64 data URL（绝不丢图）
+// 图片插入统一入口。桌面文件模式：原图直接落盘文档同目录 assets/（磁盘文件无体积压力，
+// 不走压缩管线——压缩是为 base64 内嵌控制体积而生，对文件落盘纯属有损）；Markdown 存相对引用。
+// Web/Tauri/未保存文档：维持压缩 + base64 内嵌（localStorage 配额依赖它）；
+// 落盘失败 → 回退压缩内嵌并带 error（Editor 层 toast 提示），绝不丢图
 export async function handleImageInsert(file: File, docFilePath?: string | null): Promise<ImageInsertResult> {
-  const dataUrl = await handleImagePaste(file)
   const api = (window as any).electronAPI
-  if (!api?.writeDocAsset || !docFilePath) return { domSrc: dataUrl, mdSrc: dataUrl, asFile: false }
-  try {
-    const r = await api.writeDocAsset({ docFilePath, base64: dataUrl.slice(dataUrl.indexOf(',') + 1), ext: extFromDataUrl(dataUrl) })
-    if (r?.success && r.absolutePath && r.relativePath) {
-      return { domSrc: toDisplaySrc(r.relativePath), mdSrc: r.relativePath, asFile: true }
+  if (api?.writeDocAsset && docFilePath) {
+    try {
+      const raw = await readAsDataURL(file)
+      const r = await api.writeDocAsset({ docFilePath, base64: raw.slice(raw.indexOf(',') + 1), ext: extFromFile(file) })
+      if (r?.success && r.absolutePath && r.relativePath) {
+        return { domSrc: toDisplaySrc(r.relativePath), mdSrc: r.relativePath, asFile: true }
+      }
+      const dataUrl = await handleImagePaste(file)
+      return { domSrc: dataUrl, mdSrc: dataUrl, asFile: false, error: r?.error || '写入失败' }
+    } catch (e: any) {
+      const dataUrl = await handleImagePaste(file)
+      return { domSrc: dataUrl, mdSrc: dataUrl, asFile: false, error: e?.message || String(e) }
     }
-    return { domSrc: dataUrl, mdSrc: dataUrl, asFile: false, error: r?.error || '写入失败' }
-  } catch (e: any) {
-    return { domSrc: dataUrl, mdSrc: dataUrl, asFile: false, error: e?.message || String(e) }
   }
+  const dataUrl = await handleImagePaste(file)
+  return { domSrc: dataUrl, mdSrc: dataUrl, asFile: false }
 }
 
-// 扩展名从 data URL 取（压缩管线可能重编码，file.type 不可靠；jpeg→jpg、svg+xml→svg）
-function extFromDataUrl(dataUrl: string): string {
-  const t = (/^data:image\/([a-z0-9.+-]+)[;,]/i.exec(dataUrl)?.[1] || 'png').toLowerCase()
+// 扩展名：优先取文件名后缀（磁盘/选择器文件），剪贴板截图无名则按 MIME（jpeg→jpg、svg+xml→svg）
+function extFromFile(file: File): string {
+  const m = /\.([a-z0-9]{1,8})$/i.exec(file.name || '')
+  if (m) return m[1].toLowerCase()
+  const t = (/^image\/([a-z0-9.+-]+)$/i.exec(file.type || '')?.[1] || 'png').toLowerCase()
   return t === 'jpeg' ? 'jpg' : t === 'svg+xml' ? 'svg' : t
 }
 
