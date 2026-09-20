@@ -1,4 +1,5 @@
 import { saveAs } from 'file-saver'
+import { relativizeAssetSrcs } from './imgPaths'
 // html2canvas / jspdf 仅在导出 PDF/图片时使用,改为函数内动态 import(),避免拖慢首屏启动
 
 // 导出签名：出现在 HTML/PDF/图片 导出产物底部（不写入 Markdown 原文，避免污染内容）
@@ -177,7 +178,8 @@ function withSignature(el: HTMLElement, fn: () => Promise<boolean>): Promise<boo
 
 // 导出HTML文件
 export async function exportHTML(content: string, title: string = 'Document', theme: string = 'light'): Promise<boolean> {
-  return await saveFile(`${title}.html`, buildHTML(content, title, theme), 'text/html;charset=utf-8')
+  // 图片文件模式：协议地址还原为相对引用，导出的 HTML 与 assets/ 同目录即可显示（Typora 同款语义）
+  return await saveFile(`${title}.html`, buildHTML(relativizeAssetSrcs(content), title, theme), 'text/html;charset=utf-8')
 }
 
 // 导出PDF（Electron 用原生保存对话框，Web 用浏览器下载）

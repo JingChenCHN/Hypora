@@ -1,10 +1,17 @@
-const { app, BrowserWindow, Menu, ipcMain, dialog, shell } = require('electron')
+const { app, BrowserWindow, Menu, ipcMain, dialog, shell, net, protocol } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
+const { pathToFileURL } = require('url')
 const { execSync } = require('child_process')
 
 const isDev = process.env.NODE_ENV === 'development'
+
+// hypora-asset：图片文件模式专用协议（相对引用的显示通道，见 src/utils/imgPaths.ts）。
+// 特权方案注册必须在 app ready 之前；handle 在 whenReady 里挂。
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'hypora-asset', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }
+])
 
 // 设置 AppUserModelId，让 Windows 任务栏/窗口预览/跳转列表显示 Hypora 而非 Electron。
 // 仅 NSIS 安装版设置：安装器创建的快捷方式携带该 AUMID，任务栏能借它解析图标。
@@ -596,6 +603,34 @@ ipcMain.handle('write-binary-file', async (event, filePath, base64) => {
   }
 })
 
+// ============ 图片文件模式（相对引用 + assets/ 落盘，见 src/utils/imgPaths.ts）============
+
+// 当前打开文档所在目录：hypora-asset:// 协议读取范围的收敛边界（渲染层经 setDocBaseDir 同步）
+let assetBaseDir = null
+
+ipcMain.handle('set-doc-base-dir', async (event, dir) => {
+  assetBaseDir = typeof dir === 'string' && dir ? dir : null
+  return { success: true }
+})
+
+// 把插入的图片写入文档同目录 assets/（主进程负责建目录与防碰撞命名，渲染层只持有文档路径）
+ipcMain.handle('write-doc-asset', async (event, payload) => {
+  try {
+    const { docFilePath, base64, ext } = payload || {}
+    if (!docFilePath || typeof base64 !== 'string' || !base64) return { success: false, error: '参数缺失' }
+    const safeExt = /^[a-z0-9]{1,8}$/i.test(ext || '') ? String(ext).toLowerCase() : 'png'
+    const dir = path.join(path.dirname(docFilePath), 'assets')
+    await fs.promises.mkdir(dir, { recursive: true })
+    // 时间戳 + 随机后缀：绝不覆盖既有文件
+    const name = `img-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${safeExt}`
+    const absolutePath = path.join(dir, name)
+    await fs.promises.writeFile(absolutePath, Buffer.from(base64, 'base64'))
+    return { success: true, absolutePath, relativePath: `assets/${name}` }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+
 // 原生导出 PDF：Chromium 打印引擎按打印 CSS（print.scss，只显示文档克隆）渲染矢量 PDF，
 // 由主进程直接落盘 —— 不经渲染进程 base64 往返，体积小（KB 级 vs 位图 PDF 的百 MB 级）、文字可选中。
 ipcMain.handle('print-to-pdf', async (event, defaultFilename) => {
@@ -670,6 +705,37 @@ ipcMain.handle('dev:open-external', (event, url) => {
 appLog('INFO', `应用启动, 开发者模式: ${isDevMode()}, isDev: ${isDev}`)
 
 app.whenReady().then(() => {
+  // hypora-asset://local/<encodeURIComponent(相对路径)>：渲染层把相对引用（assets/x.png）改写为
+  // 本协议地址，主进程按当前文档目录解析读盘 —— dev 是 http 页（不能加载 file://），prod loadFile
+  // 下相对 src 会指进安装目录，故统一走协议；access-control-allow-origin 让 html2canvas 截图不污染。
+  protocol.handle('hypora-asset', async (request) => {
+    try {
+      if (request.method === 'OPTIONS') {
+        return new Response(null, { status: 204, headers: { 'access-control-allow-origin': '*' } })
+      }
+      const u = new URL(request.url)
+      if (u.host !== 'local') return new Response('bad request', { status: 400 })
+      if (!assetBaseDir) return new Response('no document', { status: 404 })
+      const rel = decodeURIComponent(u.pathname.replace(/^\//, ''))
+      // 安全收敛：只放行当前文档目录内的相对引用，防 .. 逃逸/绝对路径把协议变成任意文件读取通道
+      if (!rel || rel.includes('..') || path.isAbsolute(rel) || /^[A-Za-z]:/.test(rel)) {
+        return new Response('forbidden', { status: 403 })
+      }
+      const abs = path.resolve(assetBaseDir, rel)
+      const base = assetBaseDir.replace(/[\\/]+$/, '') + path.sep
+      if (!abs.toLowerCase().startsWith(base.toLowerCase())) return new Response('forbidden', { status: 403 })
+      const stat = await fs.promises.stat(abs).catch(() => null)
+      if (!stat || !stat.isFile()) return new Response('not found', { status: 404 })
+      const res = await net.fetch(pathToFileURL(abs).toString(), { bypassCustomProtocolHandlers: true })
+      const MIME = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml', bmp: 'image/bmp', avif: 'image/avif', ico: 'image/x-icon', mp4: 'video/mp4', webm: 'video/webm', mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg', m4a: 'audio/mp4' }
+      const ext = path.extname(abs).slice(1).toLowerCase()
+      const headers = { ...Object.fromEntries(res.headers), 'access-control-allow-origin': '*', 'cache-control': 'no-store' }
+      if (MIME[ext]) headers['content-type'] = MIME[ext]
+      return new Response(res.body, { status: res.status, headers })
+    } catch (err) {
+      return new Response('error', { status: 500 })
+    }
+  })
   createWindow()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

@@ -5,6 +5,7 @@ import { gfm } from 'turndown-plugin-gfm'
 import katex from 'katex'
 import 'katex/dist/katex.min.css'
 import footnote from 'marked-footnote'
+import { toDisplaySrc, resolveAssetSrcs, relativizeAssetSrcs } from './imgPaths'
 
 // Prism 语言组件（prismjs/components/*）是 CJS，内部直接用未声明的全局 `Prism`，
 // 依赖 prismjs core 求值时挂的 `_self.Prism`。静态 import 时 rolldown 把它们 ESM 化后，
@@ -214,6 +215,8 @@ export function mdToHtml(md: string): string {
     // [TOC] → 文档内可点击目录（占位，渲染后用 buildToc 填充）
     md = md.replace(/^\[TOC\]$/m, '<div class="toc-placeholder"></div>')
     html = marked.parse(md) as string
+    // 图片文件模式：相对引用 → hypora-asset 协议地址（DOM 显示用；store 往返由 htmlToMd 还原）
+    html = resolveAssetSrcs(html)
     // 表格对齐：marked 输出 deprecated 的 align 属性，转成内联 style
     // （否则会被主题 CSS 的 text-align:left 覆盖，|:-:| 失效；内联 style 也让导出 HTML/PDF 带对齐）
     html = html.replace(/<(th|td)([^>]*)\salign="(left|center|right)"([^>]*)>/g, '<$1$2$4 style="text-align:$3">')
@@ -440,6 +443,8 @@ turndown.addRule('removeCopyBtn', {
 
 // HTML转Markdown（用于 contenteditable 内容回写 store 和导出）
 export function htmlToMd(html: string): string {
+  // 图片文件模式：协议显示地址还原为相对引用，store 只存 assets/x.png 或 data:
+  html = relativizeAssetSrcs(html)
   let md = turndown.turndown(html)
   // 修正无序列表标记的多余空格（turndown 硬编码 '-   '，改为 '- ' 保持往返一致）
   md = md.replace(/^([*-]) {3,}/gm, '$1 ')
@@ -648,6 +653,31 @@ export async function handleImagePaste(file: File): Promise<string> {
     if (out.length <= IMG_TARGET_B64) return out
   }
   return fallback && fallback.length < raw.length ? fallback : raw
+}
+
+export interface ImageInsertResult { domSrc: string; mdSrc: string; asFile: boolean; error?: string }
+
+// 图片插入统一入口：先走既有压缩链路（尊重图片设置），桌面文件模式下落盘文档同目录 assets/，
+// Markdown 存相对引用；Web/Tauri/未保存文档/写失败 → 回退 base64 data URL（绝不丢图）
+export async function handleImageInsert(file: File, docFilePath?: string | null): Promise<ImageInsertResult> {
+  const dataUrl = await handleImagePaste(file)
+  const api = (window as any).electronAPI
+  if (!api?.writeDocAsset || !docFilePath) return { domSrc: dataUrl, mdSrc: dataUrl, asFile: false }
+  try {
+    const r = await api.writeDocAsset({ docFilePath, base64: dataUrl.slice(dataUrl.indexOf(',') + 1), ext: extFromDataUrl(dataUrl) })
+    if (r?.success && r.absolutePath && r.relativePath) {
+      return { domSrc: toDisplaySrc(r.relativePath), mdSrc: r.relativePath, asFile: true }
+    }
+    return { domSrc: dataUrl, mdSrc: dataUrl, asFile: false, error: r?.error || '写入失败' }
+  } catch (e: any) {
+    return { domSrc: dataUrl, mdSrc: dataUrl, asFile: false, error: e?.message || String(e) }
+  }
+}
+
+// 扩展名从 data URL 取（压缩管线可能重编码，file.type 不可靠；jpeg→jpg、svg+xml→svg）
+function extFromDataUrl(dataUrl: string): string {
+  const t = (/^data:image\/([a-z0-9.+-]+)[;,]/i.exec(dataUrl)?.[1] || 'png').toLowerCase()
+  return t === 'jpeg' ? 'jpg' : t === 'svg+xml' ? 'svg' : t
 }
 
 // 插入Markdown语法

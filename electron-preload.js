@@ -11,6 +11,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   showSaveDialog: (defaultFilename) => ipcRenderer.invoke('save-dialog', defaultFilename),
   writeFile: (filePath, content) => ipcRenderer.invoke('write-file', filePath, content),
   writeBinaryFile: (filePath, base64) => ipcRenderer.invoke('write-binary-file', filePath, base64),
+  // 图片文件模式：图片落盘文档同目录 assets/（返回绝对+相对路径）；同步文档目录供协议收敛读取范围
+  writeDocAsset: (payload) => ipcRenderer.invoke('write-doc-asset', payload),
+  setDocBaseDir: (dir) => ipcRenderer.invoke('set-doc-base-dir', dir),
   // 原生导出 PDF（printToPDF 矢量输出，主进程直接落盘）
   printToPDF: (defaultFilename) => ipcRenderer.invoke('print-to-pdf', defaultFilename),
   openFileDialog: () => ipcRenderer.invoke('open-file-dialog'),

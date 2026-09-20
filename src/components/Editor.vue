@@ -79,7 +79,8 @@
 import { ref, computed, watch, nextTick, onMounted, onUnmounted, defineAsyncComponent } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useDocumentStore } from '@/stores/document'
-import { mdToHtml, renderMermaid, extractOutline, handleImagePaste, insertMarkdown, htmlToMd, highlightCodeElement, normalizeMediaElements } from '@/utils/markdown'
+import { mdToHtml, renderMermaid, extractOutline, handleImageInsert, insertMarkdown, htmlToMd, highlightCodeElement, normalizeMediaElements } from '@/utils/markdown'
+import { dirOfDocPath } from '@/utils/imgPaths'
 import { readPdfFile } from '@/utils/export'
 import ContextMenu from './ContextMenu.vue'
 import MediaViewer from './MediaViewer.vue'
@@ -141,6 +142,13 @@ let lastSelectionRange: Range | null = null
 const history = ref<string[]>([])
 const historyIndex = ref(-1)
 let isUndoing = false
+
+// 打开磁盘文档后向主进程同步其所在目录：hypora-asset:// 协议读取范围收敛于此（安全边界）。
+// 声明在 activeDocId watch 之前 —— immediate 回调按声明顺序执行，保证打开文档渲染出
+// <img> 前，主进程已拿到目录（set-doc-base-dir 先于首个协议请求过桥）。
+watch(() => docStore.activeDocument?.filePath, (p) => {
+  window.electronAPI?.setDocBaseDir?.(p ? dirOfDocPath(p) : null)
+}, { immediate: true })
 
 // 切换文档（含新建文档）时强制重新渲染，无论 content 是否相同
 watch(() => docStore.activeDocId, (newId, oldId) => {
@@ -1386,8 +1394,9 @@ async function handlePaste(e: ClipboardEvent) {
       if (items[i].type.indexOf('image') !== -1) {
         const file = items[i].getAsFile()
         if (file) {
-          const imgData = await handleImagePaste(file)
-          document.execCommand('insertHTML', false, `<img src="${imgData}" alt="pasted image">`)
+          const img = await handleImageInsert(file, docStore.activeDocument?.filePath)
+          if (img.error) ElMessage.warning({ message: `图片文件保存失败，已改用内嵌：${img.error}`, duration: 3000 })
+          document.execCommand('insertHTML', false, `<img src="${img.domSrc}" alt="pasted image">`)
           return
         }
       }
@@ -1454,8 +1463,9 @@ async function handleDrop(e: DragEvent) {
   if (files && files.length > 0) {
     for (let i = 0; i < files.length; i++) {
       if (files[i].type.indexOf('image') !== -1) {
-        const imgData = await handleImagePaste(files[i])
-        document.execCommand('insertHTML', false, `<img src="${imgData}" alt="dropped image">`)
+        const img = await handleImageInsert(files[i], docStore.activeDocument?.filePath)
+        if (img.error) ElMessage.warning({ message: `图片文件保存失败，已改用内嵌：${img.error}`, duration: 3000 })
+        document.execCommand('insertHTML', false, `<img src="${img.domSrc}" alt="dropped image">`)
         return
       }
     }
@@ -2263,8 +2273,9 @@ function insertFormat(action: string, value?: string) {
         input.onchange = async (e) => {
           const file = (e.target as HTMLInputElement).files?.[0]
           if (file) {
-            const imgData = await handleImagePaste(file)
-            document.execCommand('insertHTML', false, `<img src="${imgData}" alt="image">`)
+            const img = await handleImageInsert(file, docStore.activeDocument?.filePath)
+            if (img.error) ElMessage.warning({ message: `图片文件保存失败，已改用内嵌：${img.error}`, duration: 3000 })
+            document.execCommand('insertHTML', false, `<img src="${img.domSrc}" alt="image">`)
           }
         }
         input.click()
