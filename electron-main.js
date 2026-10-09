@@ -97,7 +97,8 @@ function readOpenPayload(filePath) {
     }
     return { title, filePath, kind: 'pdf', base64: buf.toString('base64') }
   }
-  return { title, content: fs.readFileSync(filePath, 'utf-8'), filePath, kind: 'markdown' }
+  // mtimeMs：外部修改检测基线——渲染层写回时带上它，主进程发现文件已被外部改动即拒绝覆盖
+  return { title, content: fs.readFileSync(filePath, 'utf-8'), filePath, kind: 'markdown', mtimeMs: fs.statSync(filePath).mtimeMs }
 }
 
 async function openLocalFile() {
@@ -641,10 +642,34 @@ ipcMain.handle('save-dialog', async (event, defaultFilename) => {
   return result
 })
 
-ipcMain.handle('write-file', async (event, filePath, content) => {
+// 写回文档文件。expectedMtimeMs 是渲染层最后已知的修改时间（打开时下发、每次成功写回后更新）：
+// 与磁盘当前值不一致 = 文件在 Hypora 之外被改过 → 拒绝覆盖并带回磁盘最新内容，由渲染层弹窗裁决，
+// 防止编辑器静默用旧内容回退外部修改。expectedMtimeMs 为 null/undefined（导出/另存/用户确认覆盖）时无条件写。
+const MTIME_EPSILON_MS = 50 // FAT/exFAT 等文件系统时间戳精度粗糙，比较留容差
+ipcMain.handle('write-file', async (event, filePath, content, expectedMtimeMs) => {
   try {
+    const stat = fs.existsSync(filePath) ? fs.statSync(filePath) : null
+    if (stat && expectedMtimeMs != null && Math.abs(stat.mtimeMs - expectedMtimeMs) > MTIME_EPSILON_MS) {
+      let diskContent = null
+      try { diskContent = fs.readFileSync(filePath, 'utf-8') } catch { /* 读不出就不带内容，仅报冲突 */ }
+      return { success: false, conflict: true, diskContent, diskMtime: stat.mtimeMs, error: '文件已被外部程序修改' }
+    }
     fs.writeFileSync(filePath, content, 'utf-8')
-    return { success: true }
+    return { success: true, mtimeMs: fs.statSync(filePath).mtimeMs }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+
+// 读取文档文件（外部修改检测）：knownMtimeMs 与磁盘一致时走 unchanged 快路径，免传内容
+ipcMain.handle('read-doc-file', async (event, filePath, knownMtimeMs) => {
+  try {
+    if (!filePath || !fs.existsSync(filePath)) return { success: false, error: '文件不存在' }
+    const stat = fs.statSync(filePath)
+    if (knownMtimeMs != null && Math.abs(stat.mtimeMs - knownMtimeMs) <= MTIME_EPSILON_MS) {
+      return { success: true, unchanged: true, mtimeMs: stat.mtimeMs }
+    }
+    return { success: true, content: fs.readFileSync(filePath, 'utf-8'), mtimeMs: stat.mtimeMs }
   } catch (err) {
     return { success: false, error: err.message }
   }

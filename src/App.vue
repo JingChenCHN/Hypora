@@ -175,12 +175,18 @@ async function saveDocument() {
 
   // Electron 环境 + 有源文件路径：写回原文件
   if (current.filePath && (window as any).electronAPI?.writeFile) {
-    const result = await (window as any).electronAPI.writeFile(current.filePath, current.content)
+    const result = await (window as any).electronAPI.writeFile(current.filePath, current.content, current.fileMtime)
     if (result.success) {
+      await docStore.handleWriteResult(current, result) // 更新外部修改基线
       current.isSaved = true
       docStore.saveToLocal()
       ElMessage.success({ message: `已保存到文件: ${current.filePath}`, duration: 2000 })
       devLog.info(`保存到文件: ${current.filePath}`)
+    } else if (result.conflict) {
+      // 文件被外部改过：显式保存也弹窗裁决（不静默覆盖外部修改）
+      await docStore.handleWriteResult(current, result, true)
+      current.isSaved = true
+      docStore.saveToLocal()
     } else {
       ElMessage.error(`保存失败: ${result.error}`)
       devLog.error(`保存失败: ${result.error}`)
@@ -288,7 +294,9 @@ function bootstrapEditor() {
       // PDF 只读，不写回（content 为空，写回会清空源文件）
       if (doc?.kind === 'pdf') { docStore.saveToLocal(); return }
       if (doc?.filePath && (window as any).electronAPI?.writeFile) {
-        await (window as any).electronAPI.writeFile(doc.filePath, doc.content)
+        const r = await (window as any).electronAPI.writeFile(doc.filePath, doc.content, doc.fileMtime)
+        // 冲突（文件被外部改过）：弹窗裁决后（加载磁盘版/覆盖/稍后）才继续关闭流程
+        if (r?.conflict) await docStore.handleWriteResult(doc, r, true)
       }
       docStore.saveToLocal()
       devLog.info('关闭前已保存')
@@ -354,7 +362,7 @@ function bootstrapEditor() {
         devLog.info(`打开 PDF 文件: ${payload.filePath || payload.title}`)
         return
       }
-      docStore.importDocument(payload.title, payload.content, payload.filePath)
+      docStore.importDocument(payload.title, payload.content, payload.filePath, payload.mtimeMs)
       ElMessage.success(`已打开: ${payload.title}`)
       devLog.info(`打开文件: ${payload.filePath || payload.title}`)
     })

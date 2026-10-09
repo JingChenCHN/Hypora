@@ -9,7 +9,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onOpenFile: (callback) => ipcRenderer.on('open-file', (event, data) => callback(data)),
   // ===== 文件操作 =====
   showSaveDialog: (defaultFilename) => ipcRenderer.invoke('save-dialog', defaultFilename),
-  writeFile: (filePath, content) => ipcRenderer.invoke('write-file', filePath, content),
+  writeFile: (filePath, content, expectedMtimeMs) => ipcRenderer.invoke('write-file', filePath, content, expectedMtimeMs),
+  // 外部修改检测：读文档当前内容+mtime；knownMtimeMs 一致时返回 unchanged 免传输内容
+  readFileDoc: (filePath, knownMtimeMs) => ipcRenderer.invoke('read-doc-file', filePath, knownMtimeMs),
   writeBinaryFile: (filePath, base64) => ipcRenderer.invoke('write-binary-file', filePath, base64),
   // 图片文件模式：图片落盘文档同目录 assets/（返回绝对+相对路径）；同步文档目录供协议收敛读取范围
   writeDocAsset: (payload) => ipcRenderer.invoke('write-doc-asset', payload),

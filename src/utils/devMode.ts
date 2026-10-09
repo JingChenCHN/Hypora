@@ -24,9 +24,13 @@ interface ElectronAPI {
     openExternal: (url: string) => Promise<void>
   }
   onMenuAction?: (cb: (action: string) => void) => void
-  onOpenFile?: (cb: (data: { title: string; content: string; kind?: string; base64?: string; error?: string }) => void) => void
+  onOpenFile?: (cb: (data: { title: string; content: string; kind?: string; base64?: string; error?: string; filePath?: string; mtimeMs?: number }) => void) => void
   showSaveDialog?: (name: string) => Promise<any>
-  writeFile?: (path: string, content: string) => Promise<{ success: boolean; error?: string }>
+  // 写回文档文件：expectedMtimeMs 为外部修改检测基线（null/undefined = 无条件写，如导出/用户确认覆盖）；
+  // 文件已被外部修改时返回 conflict + 磁盘最新内容，由调用方裁决
+  writeFile?: (path: string, content: string, expectedMtimeMs?: number | null) => Promise<{ success: boolean; mtimeMs?: number; conflict?: boolean; diskContent?: string | null; diskMtime?: number; error?: string }>
+  // 读取文档文件（外部修改检测）：knownMtimeMs 与磁盘一致时返回 unchanged 不带内容
+  readFileDoc?: (path: string, knownMtimeMs?: number | null) => Promise<{ success: boolean; unchanged?: boolean; content?: string; mtimeMs?: number; error?: string }>
   // 图片文件模式：图片落盘文档同目录 assets/（主进程负责建目录与防碰撞命名）
   writeDocAsset?: (payload: { docFilePath: string; base64: string; ext: string }) => Promise<{ success: boolean; absolutePath?: string; relativePath?: string; error?: string }>
   // 同步当前文档所在目录给主进程（hypora-asset:// 协议读取范围收敛于此）

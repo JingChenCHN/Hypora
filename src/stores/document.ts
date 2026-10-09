@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { ElNotification } from 'element-plus'
+import { ElNotification, ElMessageBox } from 'element-plus'
 
 export type DocumentKind = 'markdown' | 'pdf'
 
@@ -12,6 +12,8 @@ export interface Document {
   updateTime: number
   isSaved: boolean
   filePath?: string  // 打开的本地文件路径，Ctrl+S 时写回该文件
+  fileMtime?: number  // 文件最后已知修改时间（外部修改检测基线：打开时下发、成功写回后更新）
+  conflictPending?: boolean  // 检测到外部修改且用户尚未裁决：自动写回的弹窗被抑制，防轰炸
   kind?: DocumentKind  // 缺省视为 markdown；pdf 文档为只读预览（字节存会话内存，不进缓存）
 }
 
@@ -137,6 +139,13 @@ $$E=mc^2$$
     } else {
       newDocument('欢迎使用 Hypora', WELCOME_CONTENT)
     }
+
+    // 外部修改同步：重启恢复的文档重读磁盘采用外部改动（彻底退出期间文件被别的编辑器改过）
+    recheckExternalChanges()
+    // 窗口从托盘/最小化唤出时同样重查（Hypora 常驻期间文件被外部修改的场景）
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') recheckExternalChanges()
+    })
   }
 
   // 新建文档（content 默认空白；首次启动可传入欢迎引导内容）
@@ -186,6 +195,76 @@ $$E=mc^2$$
     }, delay)
   }
 
+  // ===== 外部修改检测 =====
+  // 写回结果统一处理：成功 → 更新基线；冲突 → 弹窗让用户裁决（加载磁盘版本 / 用我的版本覆盖 / 稍后）。
+  // App.vue 的 Ctrl+S 与关窗保存也走这里（await），全应用只有这一个冲突裁决入口。
+  // explicit=true（用户主动保存）会无视 conflictPending 再次弹窗；自动路径（防抖保存）遇到未裁决冲突静默跳过。
+  async function handleWriteResult(doc: Document, r: any, explicit = false): Promise<void> {
+    if (!r) return
+    if (r.success) {
+      if (typeof r.mtimeMs === 'number') doc.fileMtime = r.mtimeMs
+      doc.conflictPending = false
+      return
+    }
+    if (!r.conflict) return // 普通写失败（权限等）：调用方自行提示
+    if (doc.conflictPending && !explicit) return
+    doc.conflictPending = true
+    try {
+      await ElMessageBox.confirm(
+        `「${doc.title || '未命名文档'}」在 Hypora 之外被修改过。加载磁盘版本将丢弃当前未保存的编辑；用我的版本覆盖将丢弃磁盘上的外部修改。`,
+        '检测到文件被外部修改',
+        {
+          distinguishCancelAndClose: true,
+          confirmButtonText: '加载磁盘版本',
+          cancelButtonText: '用我的版本覆盖',
+          type: 'warning'
+        }
+      )
+      // 加载磁盘版本
+      if (typeof r.diskContent === 'string') doc.content = r.diskContent
+      if (typeof r.diskMtime === 'number') doc.fileMtime = r.diskMtime
+      doc.conflictPending = false
+      saveToLocal()
+    } catch (action: any) {
+      if (action === 'cancel') {
+        // 用我的版本覆盖：不带基线强制写回，成功后更新基线
+        doc.conflictPending = false
+        try {
+          const rr = await (window as any).electronAPI?.writeFile?.(doc.filePath, doc.content, null)
+          if (rr?.success) {
+            if (typeof rr.mtimeMs === 'number') doc.fileMtime = rr.mtimeMs
+            saveToLocal()
+          }
+        } catch { /* 保持冲突态，下次保存再裁决 */ }
+      }
+      // action === 'close'（稍后再说）：保持 conflictPending，自动写回的弹窗被抑制；下次 Ctrl+S 再裁决
+    }
+  }
+
+  // 磁盘重查：文档恢复自缓存（重启后）/ 窗口从托盘唤出时，重读磁盘采用外部修改，
+  // 消除"缓存旧内容回退外部新内容"。有未保存编辑的文档跳过（交给写回冲突流程裁决）。
+  async function recheckExternalChanges(): Promise<void> {
+    const electronAPI = (window as any).electronAPI
+    if (!electronAPI?.readFileDoc) return // Web / Tauri 无此能力
+    let reloaded = 0
+    for (const doc of documents.value) {
+      if (doc.kind === 'pdf' || !doc.filePath || !doc.isSaved) continue
+      try {
+        const r = await electronAPI.readFileDoc(doc.filePath, doc.fileMtime)
+        if (!r?.success) continue // 文件被外部删除：保留缓存版本不动
+        if (r.unchanged || typeof r.mtimeMs !== 'number') continue
+        if (doc.fileMtime == null && r.content === doc.content) { doc.fileMtime = r.mtimeMs; continue } // 旧缓存无基线但内容一致：仅建基线
+        doc.content = r.content ?? doc.content
+        doc.fileMtime = r.mtimeMs
+        reloaded++
+      } catch { /* 单个文件读取失败不阻塞其余 */ }
+    }
+    if (reloaded > 0) {
+      saveToLocal()
+      ElNotification({ title: '已同步外部修改', message: `${reloaded} 个文档在 Hypora 之外被修改过，已从磁盘重新加载。`, type: 'info', duration: 5000 })
+    }
+  }
+
   // 未能写入浏览器离线缓存的文档（配额超限降级淘汰），供列表标「未缓存」
   const unpersistedIds = ref<Set<string>>(new Set())
   let lastUnpersistedKey = ''
@@ -217,7 +296,10 @@ $$E=mc^2$$
       // PDF 文档为只读预览（content 为空字符串），绝不写回——否则会把源 PDF 覆写为 0 字节
       const electronAPI = (window as any).electronAPI
       if (doc.kind !== 'pdf' && doc.filePath && electronAPI?.writeFile) {
-        electronAPI.writeFile(doc.filePath, doc.content).catch(() => {})
+        // 带基线写回：文件被外部改过会被主进程拒绝并进入裁决弹窗，绝不静默覆盖
+        electronAPI.writeFile(doc.filePath, doc.content, doc.fileMtime).then((r: any) => {
+          handleWriteResult(doc, r)
+        }).catch(() => {})
       }
     }
     // localStorage 持久化（容错：文档列表可能含大图 base64，超出 ~5MB 配额）
@@ -462,7 +544,7 @@ $$E=mc^2$$
   }
 
   // 导入文档
-  function importDocument(title: string, content: string, filePath?: string) {
+  function importDocument(title: string, content: string, filePath?: string, mtimeMs?: number) {
     const id = `${Date.now()}${Math.floor(Math.random() * 1000)}`
     const newDoc: Document = {
       id,
@@ -471,7 +553,8 @@ $$E=mc^2$$
       createTime: Date.now(),
       updateTime: Date.now(),
       isSaved: true,
-      filePath
+      filePath,
+      fileMtime: mtimeMs
     }
     documents.value.push(newDoc)
     activeDocId.value = id
@@ -539,6 +622,8 @@ $$E=mc^2$$
     renameDocument,
     importDocument,
     importPdfDocument,
+    handleWriteResult,
+    recheckExternalChanges,
     getPdfBase64,
     isPdfActive,
     pdfPage,
