@@ -32,7 +32,7 @@
 
     <!-- 索引进度 -->
     <template v-if="kbStore.indexing && kbStore.progress">
-      <div class="kb-track"><div class="kb-fill" :style="{ width: progressPct + '%' }"></div></div>
+      <div class="kb-track"><div class="kb-fill" :style="{ transform: `scaleX(${progressPct / 100})` }"></div></div>
       <div class="kb-readout">{{ progressText }}</div>
     </template>
 
@@ -246,7 +246,8 @@ watch(visible, (v) => { if (v) void kbStore.refresh() })
 .kb-fill {
   height: 100%;
   background: var(--text-primary);
-  transition: width 0.2s linear;
+  transform-origin: left;
+  transition: transform 0.2s linear;
 }
 .kb-readout {
   font-family: var(--font-mono);
