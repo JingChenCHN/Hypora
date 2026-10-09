@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, ipcMain, dialog, shell, net, protocol } = require('electron')
+const { app, BrowserWindow, Menu, Tray, ipcMain, dialog, shell, net, protocol } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
@@ -23,6 +23,13 @@ if (app.isPackaged && !isPortable) {
 }
 
 let mainWindow
+
+// ============ 托盘后台运行（Windows）============
+// 关闭窗口 = 保存后隐藏到托盘（进程与内置引擎常驻，二次唤起零等待）；
+// 托盘右键菜单才有「完全退出」。非 Windows 平台维持原关闭即退出行为。
+const TRAY_ENABLED = process.platform === 'win32'
+let quitting = false
+let tray = null
 
 // ============ 日志系统 ============
 const userDataPath = app.getPath('userData')
@@ -277,6 +284,13 @@ function createWindow() {
     } catch (err) {
       appLog('ERROR', `关闭前保存失败: ${err.message}`)
     }
+    // 托盘模式：关闭 = 保存后隐藏（进程常驻，再次打开零等待）；完全退出（或托盘创建失败）才真正销毁
+    if (TRAY_ENABLED && tray && !quitting) {
+      isClosing = false
+      mainWindow.hide()
+      notifyTrayHintOnce()
+      return
+    }
     mainWindow.destroy()
   })
 
@@ -296,6 +310,49 @@ function createWindow() {
   mainWindow.on('always-on-top-changed', (_e, isOnTop) => mainWindow.webContents.send('win-always-on-top', isOnTop))
 
   createMenu()
+}
+
+// ============ 托盘 ============
+function showMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) { createWindow(); return }
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.show()
+  mainWindow.focus()
+}
+
+// 首次隐藏时弹一次气泡提示，之后静默；标记落在 userData 防重复打扰
+function notifyTrayHintOnce() {
+  try {
+    const flag = path.join(userDataPath, 'tray-hint.flag')
+    if (!TRAY_ENABLED || !tray || fs.existsSync(flag)) return
+    fs.writeFileSync(flag, new Date().toISOString())
+    tray.displayBalloon({
+      icon: windowIcon,
+      title: 'Hypora 仍在后台运行',
+      content: '点击托盘图标可重新打开窗口；右键托盘图标可选择完全退出。'
+    })
+  } catch (e) { /* 提示失败不影响主流程 */ }
+}
+
+function createTray() {
+  if (!TRAY_ENABLED) return
+  try {
+    tray = new Tray(windowIcon)
+    tray.setToolTip('Hypora')
+    const menu = Menu.buildFromTemplate([
+      { label: '打开 Hypora', click: showMainWindow },
+      { type: 'separator' },
+      { label: '完全退出', click: () => { appLog('INFO', '托盘：完全退出'); quitting = true; app.quit() } }
+    ])
+    // 不用 setContextMenu：Windows 下它会让左键也弹菜单。这里左键/双击唤出窗口，右键弹菜单
+    tray.on('click', showMainWindow)
+    tray.on('double-click', showMainWindow)
+    tray.on('right-click', () => tray.popUpContextMenu(menu))
+    appLog('INFO', '托盘已创建（关闭窗口 = 后台运行）')
+  } catch (e) {
+    tray = null
+    appLog('ERROR', `托盘创建失败，回退为关闭即退出: ${e.message}`)
+  }
 }
 
 // ============ 菜单 ============
@@ -737,6 +794,7 @@ app.whenReady().then(() => {
     }
   })
   createWindow()
+  createTray()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
@@ -750,6 +808,7 @@ app.whenReady().then(() => {
   aiEngine.start().catch(() => {})
 })
 
+app.on('before-quit', () => { quitting = true })
 // 两条退出路径独立盖杀：防止 llama-server 孤儿进程（系统设计文档 D4）
 app.on('before-quit', () => aiEngine.kill())
 app.on('will-quit', () => aiEngine.kill())
@@ -763,9 +822,9 @@ if (!gotTheLock) {
   app.quit()
 } else {
   app.on('second-instance', (event, argv) => {
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore()
-      mainWindow.focus()
+    // 已有实例常驻（含托盘隐藏态）：唤出已有窗口实现秒开，不起新进程
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      showMainWindow()
       // 已运行实例时双击另一.md文件，打开它
       const file = getFileFromArgv(argv)
       if (file) openFilePath(file)
