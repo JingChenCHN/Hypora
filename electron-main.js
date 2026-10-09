@@ -62,6 +62,13 @@ const aiEngine = require('./electron-ai-engine.cjs').initAiEngine((level, messag
   writeLog(level, 'ai-engine', message)
 })
 
+// ============ 知识库（本地 RAG，见 electron-kb.cjs）============
+// 第二个 llama-server 实例（--embedding，CPU 优先）+ 分片向量索引；boot 不自动启动，
+// 首次查询/索引时按需拉起。日志 source 标记 knowledge。
+const kb = require('./electron-kb.cjs').initKnowledgeBase((level, message) => {
+  writeLog(level, 'knowledge', message)
+})
+
 // 捕获主进程未处理异常
 process.on('uncaughtException', (err) => {
   appLog('ERROR', `UncaughtException: ${err.stack || err.message}`)
@@ -837,6 +844,9 @@ app.on('before-quit', () => { quitting = true })
 // 两条退出路径独立盖杀：防止 llama-server 孤儿进程（系统设计文档 D4）
 app.on('before-quit', () => aiEngine.kill())
 app.on('will-quit', () => aiEngine.kill())
+// 知识库嵌入服务同样双钩子盖杀，防第二个 llama-server 孤儿进程
+app.on('before-quit', () => kb.kill())
+app.on('will-quit', () => kb.kill())
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()

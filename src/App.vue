@@ -89,6 +89,7 @@ const AIPanel = defineAsyncComponent(() => import('./components/AIPanel.vue'))
 import type { OutlineItem } from '@/utils/markdown'
 import { ElMessage } from 'element-plus'
 import { useAIStore } from '@/stores/ai'
+import { useKbStore } from '@/stores/kb'
 import { useAuthStore, authNeeded } from '@/stores/auth'
 
 const docStore = useDocumentStore()
@@ -268,6 +269,8 @@ function bootstrapEditor() {
 
   docStore.init()
   aiStore.init()
+  // 知识库推送绑定 + 首次对账（桌面端才有 kb* API；bind 内部自门控）
+  useKbStore().bind()
 
   // Tauri 关闭前保存（仅 Tauri 环境；Electron 走下面的 window.__saveBeforeClose）
   // 此前无条件注册，在 Electron 环境调 @tauri-apps/api 的 listen 会抛

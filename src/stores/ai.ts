@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { streamChat, testConnection as testConn, type ChatMessage, type ContentPart } from '@/utils/deepseek'
 import { hasAiEngine, engineApi, type EnginePhase, type EngineStatus, type EngineConfig, type EngineDownloadState } from '@/utils/aiEngine'
+import { useKbStore } from '@/stores/kb'
 import { useAuthStore, authNeeded } from '@/stores/auth'
 import { chatGet, chatPut, type ChatPayload } from '@/utils/authApi'
 
@@ -531,6 +532,22 @@ export const useAIStore = defineStore('ai', () => {
       if (t) chat.title = t
     }
 
+    loading.value = true
+    controller = new AbortController()
+
+    // 知识库检索（全提供方自动注入；6s 预算 + 失败/超时静默降级，绝不阻塞或打断对话）。
+    // 先于 startEngine：两段等待顺序执行且各自有界（检索 6s / 引擎 150s）。
+    let kbBlock = ''
+    try {
+      const kbStore = useKbStore()
+      const r = await kbStore.retrieveForChat(prompt, ctx.selection, controller.signal)
+      if (r.block) {
+        kbBlock = r.block
+        // 检索标注挂到本条用户消息（展示用；组装历史时剥离，不发给模型）
+        chat.messages[aiIdx - 1].kbNote = { hits: r.hits, sources: r.sources }
+      }
+    } catch { /* 检索层已兜底，任何异常不影响对话 */ }
+
     // 托管模式：先落占位再按需拉起引擎——面板显示「AI 正在思考…」的同时模型在后台加载
     if (useManaged && !engineRunning.value) {
       const ok = await startEngine()
@@ -542,16 +559,17 @@ export const useAIStore = defineStore('ai', () => {
       }
     }
 
-    loading.value = true
-    controller = new AbortController()
     try {
       // 历史含本次 user，不含末尾空 assistant 占位
       const sysContent = isGlm
         ? '你是 Hypora 内置的 AI 助手，具备图像理解能力。用户上传图片时，请详细提取并描述图片内容（包括文字、表格、图表、图形、场景、人物等所有可见信息），输出结构化 Markdown。'
         : '你是 Hypora 内置的 AI 写作助手。用户在 Markdown 编辑器中写作，你的回复使用 Markdown 格式，简洁实用。'
+      // 知识库块合并进同一条 system 消息：llama.cpp 的 jinja 模板对中置 system 会丢弃/错乱，
+      // 单条 system 是三提供方（DeepSeek/GLM/llama-server）行为完全一致的唯一形状。
+      // kbNote 是展示标注，map 剥离后才进请求。
       const history: ChatMessage[] = [
-        { role: 'system', content: sysContent },
-        ...chat.messages.slice(0, aiIdx)
+        { role: 'system', content: kbBlock ? sysContent + '\n\n' + kbBlock : sysContent },
+        ...chat.messages.slice(0, aiIdx).map((m) => ({ role: m.role, content: m.content }))
       ]
       await streamChat({
         // 托管模式用引擎协商出的实际端口；model 传 undefined → llama-server 使用 GGUF 内置模板

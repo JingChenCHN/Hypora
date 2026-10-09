@@ -51,6 +51,28 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('ai-engine-download', listener)
     return () => ipcRenderer.removeListener('ai-engine-download', listener)
   },
+  // ===== 知识库（本地 RAG：主进程托管嵌入服务 + 分片向量索引）=====
+  kbConfig: () => ipcRenderer.invoke('kb:get-config'),
+  kbSetConfig: (patch) => ipcRenderer.invoke('kb:set-config', patch),
+  kbPickModel: () => ipcRenderer.invoke('kb:pick-model'),
+  kbSetModel: (modelPath) => ipcRenderer.invoke('kb:set-model', modelPath),
+  kbAddSource: () => ipcRenderer.invoke('kb:add-source'),
+  kbRemoveSource: (dir) => ipcRenderer.invoke('kb:remove-source', dir),
+  kbReindex: (opts) => ipcRenderer.invoke('kb:reindex', opts),
+  kbCancelIndex: () => ipcRenderer.invoke('kb:cancel-index'),
+  kbQuery: (text, topK) => ipcRenderer.invoke('kb:query', text, topK),
+  kbOpenIndexDir: () => ipcRenderer.invoke('kb:open-index-dir'),
+  // 订阅推送；返回取消订阅函数
+  onKbStatus: (callback) => {
+    const listener = (_e, payload) => callback(payload)
+    ipcRenderer.on('kb-status', listener)
+    return () => ipcRenderer.removeListener('kb-status', listener)
+  },
+  onKbProgress: (callback) => {
+    const listener = (_e, payload) => callback(payload)
+    ipcRenderer.on('kb-progress', listener)
+    return () => ipcRenderer.removeListener('kb-progress', listener)
+  },
   // ===== 开发者模式 =====
   isElectron,
   dev: {

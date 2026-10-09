@@ -231,6 +231,26 @@
             <button v-if="hasEngine" class="adv-toggle" @click="useManagedMode">改用内置助手</button>
           </template>
         </template>
+
+        <!-- 知识库条（桌面端本地 RAG；Web/Tauri 无 kb* API 不渲染） -->
+        <div v-if="hasKb" class="kb-strip">
+          <div class="config-row">
+            <label>知识库</label>
+            <span class="prov-dot" :class="kbStore.dot"></span>
+            <span class="kb-status-text">{{ kbStore.statusText || '—' }}</span>
+            <span class="flex-spacer"></span>
+            <button class="link-btn" @click="kbDialogVisible = true">管理</button>
+          </div>
+          <div class="config-row">
+            <label>自动引用</label>
+            <el-switch :model-value="kbStore.enabled" size="small" @change="onKbToggle" />
+            <span class="config-hint">对话时自动检索收录的笔记并注入上下文</span>
+          </div>
+          <div v-if="kbStore.indexing && kbStore.progress" class="kb-indexing">
+            <div class="dl-track"><div class="dl-fill" :style="{ width: kbPct + '%' }"></div></div>
+            <div class="dl-readout">{{ kbStore.progress.file || (kbStore.progress.phase === 'scanning' ? '扫描文件…' : '') }} {{ kbStore.progress.done }}/{{ kbStore.progress.total }} · {{ kbStore.progress.chunks }} 段</div>
+          </div>
+        </div>
       </div>
 
       <!-- 消息列表 -->
@@ -266,6 +286,8 @@
               <!-- 思考中：三点 lottie -->
               <LottieLoading v-else-if="i === lastIdx && aiStore.loading" :animation="aiLoadingAnimation" size="small" label="AI 正在思考…" />
             </div>
+            <!-- 检索标注：本条提问命中知识库（muted micro 徽标，不进正文） -->
+            <div v-if="msg.kbNote" class="msg-kb-note">已检索知识库 · {{ msg.kbNote.hits }} 条<template v-if="msg.kbNote.sources.length"> · {{ msg.kbNote.sources.join(' / ') }}</template></div>
             <div v-if="msg.role === 'assistant' && msg.content && !(aiStore.loading && i === lastIdx)" class="msg-actions">
               <button class="action-btn" @click="insertToCursor(asText(msg.content))">插入</button>
               <button class="action-btn" @click="replaceSel(asText(msg.content))">替换选区</button>
@@ -322,6 +344,9 @@
         </div>
         <input ref="imgInputRef" type="file" accept="image/*" multiple hidden @change="handleImageSelect" />
       </div>
+
+      <!-- 知识库管理对话框（桌面端） -->
+      <KnowledgeDialog v-if="hasKb" v-model="kbDialogVisible" />
     </div>
   </div>
 </template>
@@ -334,6 +359,9 @@ import { useDocumentStore } from '@/stores/document'
 import { mdToHtml } from '@/utils/markdown'
 import { testChatCompletion, testConnection as testExternalConn } from '@/utils/deepseek'
 import { hasAiEngine, engineApi } from '@/utils/aiEngine'
+import { hasKnowledge } from '@/utils/knowledge'
+import { useKbStore } from '@/stores/kb'
+import KnowledgeDialog from './KnowledgeDialog.vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import LottieLoading from './LottieLoading.vue'
 import assistantAnim from '@/assets/ai-assistant-bubble.json'
@@ -341,6 +369,19 @@ import { aiLoadingAnimation } from '@/assets/aiLoading'
 
 const props = defineProps<{ visible: boolean; editor: any }>()
 const aiStore = useAIStore()
+
+// —— 知识库（桌面端专用；Web/Tauri 恒为 false，整块不渲染）——
+const hasKb = hasKnowledge()
+const kbStore = useKbStore()
+const kbDialogVisible = ref(false)
+const kbPct = computed(() => {
+  const pr = kbStore.progress
+  if (!pr || !pr.total) return 0
+  return Math.min(100, Math.round((pr.done / pr.total) * 100))
+})
+function onKbToggle(v: string | number | boolean) {
+  void kbStore.setEnabled(Boolean(v))
+}
 
 // 重命名输入自动聚焦（script setup 局部指令）
 const vFocus = { mounted: (el: HTMLInputElement) => { el.focus(); el.select() } }
@@ -1166,6 +1207,23 @@ function copyText(text: string) {
     line-height: 1.6;
     margin: 2px 0 0;
   }
+  /* —— 知识库条：状态行 + 自动引用开关 + 索引进度 —— */
+  .kb-strip {
+    padding-top: 10px;
+    margin-top: 10px;
+    border-top: 1px solid var(--border-color);
+  }
+  .kb-status-text {
+    font-size: 12.5px;
+    color: var(--text-primary);
+  }
+  .kb-indexing {
+    margin-top: 6px;
+  }
+  .kb-indexing .dl-readout {
+    margin-top: 4px;
+    word-break: break-all;
+  }
 }
 
 /* —— 消息列表 —— */
@@ -1349,6 +1407,15 @@ function copyText(text: string) {
     color: var(--accent-color);
     background: var(--bg-tertiary);
   }
+}
+
+/* —— 检索标注：用户气泡下的 muted micro 徽标 —— */
+.msg-kb-note {
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-top: 6px;
+  font-variant-numeric: tabular-nums;
 }
 
 /* —— 预设：胶囊按钮 —— */

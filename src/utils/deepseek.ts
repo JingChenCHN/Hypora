@@ -17,6 +17,9 @@ export interface ChatMessage {
   role: 'system' | 'user' | 'assistant'
   // 纯文本对话为 string;图文多模态(GLM-4V 等)为 ContentPart[]
   content: string | ContentPart[]
+  // 知识库检索标注（仅用户消息；会话存档里展示「已检索知识库 · N 条」）。
+  // 展示专用：组装请求历史时必须剥离，绝不发给模型。
+  kbNote?: { hits: number; sources: string[] }
 }
 
 /** 是否桌面环境(Electron 或 Tauri)。桌面直连云端无需代理;仅纯浏览器网页版走同源代理。
