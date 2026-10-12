@@ -1095,7 +1095,10 @@ function setModel(absPath) {
   } catch (e) { return { ok: false, error: e.message } }
   const st = fs.statSync(p)
   const cfg = readKbJson()
-  const changed = cfg.modelPath !== p
+  // 以指纹（size+mtime）判定是否换模型：同指纹＝同一模型，挪位置（如移入 ai-models/）不清索引；
+  // 指纹变化＝换了模型文件（含原路径覆盖新版本），向量必失效，必清全部库索引
+  const sameModel = cfg.modelSize != null && cfg.modelMtimeMs != null && cfg.modelSize === st.size && cfg.modelMtimeMs === st.mtimeMs
+  const changed = !sameModel
   writeKbJson({ modelPath: p, modelSize: st.size, modelMtimeMs: st.mtimeMs })
   if (changed) {
     wipeAllIndexes()
@@ -1108,6 +1111,8 @@ function setModel(absPath) {
         start().catch(() => {})
       }, 120)
     }
+  } else if (cfg.modelPath !== p) {
+    log('INFO', `检索模型已指向 ${p}（指纹未变，各库索引保留）`)
   }
   return { ok: true, config: getConfig() }
 }

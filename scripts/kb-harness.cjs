@@ -482,6 +482,41 @@ async function main() {
     assert.strictEqual(kb.setKbConfig('no-such-id', { enabled: true }).ok, false)
   })
 
+  // —— setModel 同指纹挪位置（如移入 ai-models/）：索引保留；指纹变化：清全部索引 ——
+  await ta('setModel 同指纹挪位置不清索引 / 指纹变化清索引', async () => {
+    const m = path.join(sandbox, 'm.gguf')
+    const m2 = path.join(sandbox, 'm2.gguf')
+    fs.writeFileSync(m, Buffer.concat([Buffer.from('GGUF'), Buffer.alloc(16)]))
+    fs.writeFileSync(m2, Buffer.concat([Buffer.from('GGUF'), Buffer.alloc(16)]))
+    // 统一两文件 mtime（秒+小数，避免 Date 毫秒截断损失精度；模拟 Windows 拷贝保留 mtime）
+    const stamp = 1728000000.123456
+    fs.utimesSync(m, stamp, stamp)
+    fs.utimesSync(m2, stamp, stamp)
+    // 切到 m（此时 cfg.modelSize 为迁移残留的 null → 视为换模型，清掉上一节的占位分片）
+    const r1 = kb.setModel(m)
+    assert.strictEqual(r1.ok, true)
+    // 两库各放一个占位分片
+    for (const k of kb.getConfig().kbs) {
+      fs.mkdirSync(path.join(indexRoot, k.id), { recursive: true })
+      fs.writeFileSync(path.join(indexRoot, k.id, 's.json'), '{}')
+    }
+    // 同 size+mtime = 同一模型挪位置：路径变了但不清索引
+    const r2 = kb.setModel(m2)
+    assert.strictEqual(r2.ok, true)
+    assert.strictEqual(r2.config.model.path, m2)
+    for (const k of r2.config.kbs) {
+      assert.ok(fs.existsSync(path.join(indexRoot, k.id, 's.json')), `同指纹挪位置不应清 ${k.id} 的索引`)
+    }
+    // mtime 变化 = 换模型：清全部库索引
+    const t2 = 1728003600.123456
+    fs.utimesSync(m2, t2, t2)
+    const r3 = kb.setModel(m2)
+    assert.strictEqual(r3.ok, true)
+    for (const k of r3.config.kbs) {
+      assert.ok(!fs.existsSync(path.join(indexRoot, k.id, 's.json')), `换模型应清 ${k.id} 的索引`)
+    }
+  })
+
   // —— 空索引查询零开销短路（published 全空 → 不触服务） ——
   await ta('空索引查询零开销短路（不触服务）', async () => {
     const cfg = kb.getConfig()
