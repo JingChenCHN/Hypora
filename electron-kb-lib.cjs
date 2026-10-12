@@ -290,7 +290,9 @@ function cosineTopK(q, entries, k, minScore = 0) {
 }
 
 // ============ 增量判定 ============
-// 分片指纹：文件 mtime+size + 模型指纹（size+mtime）+ 维度 + 版本，任一不符即需重建
+// 分片指纹：文件 mtime+size + 模型指纹（size+mtime）+ 维度 + 版本，任一不符即需重建。
+// 图片分片（kind==='image'）额外校验视觉投影器指纹（mprojSize/mprojMtimeMs，可选传入）——
+// 换/清 mmproj 只使图片向量失效，文本分片不受影响；skipped 分片为稳定态（用户手动重建重试）
 function shouldReindex(prevShard, stat, model = {}) {
   if (!prevShard) return true
   if (!prevShard.skipped) {
@@ -298,13 +300,20 @@ function shouldReindex(prevShard, stat, model = {}) {
     if (model.size != null && prevShard.modelSize !== model.size) return true
     if (model.mtimeMs != null && prevShard.modelMtimeMs !== model.mtimeMs) return true
     if (model.dim != null && prevShard.dim !== model.dim) return true
+    if (prevShard.kind === 'image') {
+      if (model.mprojSize != null && prevShard.mprojSize !== model.mprojSize) return true
+      if (model.mprojMtimeMs != null && prevShard.mprojMtimeMs !== model.mprojMtimeMs) return true
+    }
   }
   return prevShard.size !== stat.size || prevShard.mtimeMs !== stat.mtimeMs
 }
 
 // ============ 来源扫描 ============
-// 递归收集 *.md / *.markdown；跳过 . 开头目录与 node_modules；目录符号链接只在
+// 递归收集 *.md / *.markdown（opts.images 为 true 时同时收集图片：png/jpg/jpeg/webp/gif/bmp，
+// 条目 kind 标记 'text'|'image'）；跳过 . 开头目录与 node_modules；目录符号链接只在
 // realpath 仍位于已注册来源内时跟随（防环 + 防越界）；重叠来源按解析路径去重（先到先得）。
+const isImagePath = (p) => /\.(png|jpe?g|webp|gif|bmp)$/i.test(String(p))
+
 function scanSources(sources, opts = {}) {
   const maxFileBytes = opts.maxFileBytes || DEFAULT_MAX_FILE_BYTES
   const roots = [...new Set(sources.map((s) => path.resolve(s)))]
@@ -334,13 +343,14 @@ function scanSources(sources, opts = {}) {
         }
         walk(full, root)
       } else if (ent.isFile()) {
-        if (!/\.(md|markdown)$/i.test(ent.name)) continue
+        const isImg = opts.images === true && isImagePath(ent.name)
+        if (!isImg && !/\.(md|markdown)$/i.test(ent.name)) continue
         const key = caseFold(path.resolve(full))
         if (seenFiles.has(key)) continue        // 重叠来源：先到先得
         seenFiles.set(key, true)
         let st = null
         try { st = fs.statSync(full) } catch { continue }
-        out.push({ path: path.resolve(full), dir: root, size: st.size, mtimeMs: st.mtimeMs, oversized: st.size > maxFileBytes })
+        out.push({ path: path.resolve(full), dir: root, size: st.size, mtimeMs: st.mtimeMs, oversized: st.size > maxFileBytes, kind: isImg ? 'image' : 'text' })
       }
     }
   }
@@ -401,7 +411,8 @@ function mergeKbHits(perKbResults, globalTopK) {
 }
 
 // ============ 注入块格式化 ============
-// hits: [{ title, heading, text, path?, score? }]；逐条截断 + 总预算截断
+// hits: [{ title, heading, text, path?, score?, kind? }]；逐条截断 + 总预算截断；
+// 图片命中（kind==='image'）无正文，渲染为 [N] [图片] 《文件名》（路径）
 function formatKbBlock(hits, opts = {}) {
   const perHit = opts.perHitChars || 1200
   const budget = opts.budgetChars || 6000
@@ -409,6 +420,13 @@ function formatKbBlock(hits, opts = {}) {
   const lines = ['--- 知识库检索（参考资料：回答时优先依据以下内容；与问题无关请忽略，不要虚构资料外的事实）---']
   let used = 0
   hits.forEach((h, i) => {
+    if (h.kind === 'image') {
+      const head = `[${i + 1}] [图片] 《${h.title || path.basename(h.path || '图片')}》（${h.path || '路径未知'}）`
+      if (used + head.length + 2 > budget) return
+      used += head.length + 2
+      lines.push(head)
+      return
+    }
     const head = `[${i + 1}] 《${h.title || path.basename(h.path || '文档', '.md')}》${h.heading ? ' · ' + h.heading : ''}`
     const body = (h.text || '').slice(0, perHit)
     const cost = head.length + body.length + 2
@@ -431,6 +449,7 @@ module.exports = {
   cosineTopK,
   mergeKbHits,
   shouldReindex,
+  isImagePath,
   scanSources,
   shardName,
   readShard,

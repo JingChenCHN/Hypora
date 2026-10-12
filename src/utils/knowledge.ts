@@ -41,7 +41,18 @@ export interface KbSourceConfig {
   addedAt: number
 }
 
-// 嵌入模型（全局共用）：指纹 + 健康状态
+// 视觉投影器（可选，多模态图片索引）：configured+active 才参与索引
+export interface KbMmproj {
+  configured: boolean
+  active: boolean           // 配置存在且为有效 GGUF（服务已带 --mmproj）
+  missing: boolean          // 配置了但文件丢失
+  path: string | null
+  size: number | null
+  imageOk: boolean | null   // 图片嵌入探测结果：null=探测中/未探测
+  imageError: string | null
+}
+
+// 嵌入模型（全局共用）：指纹 + 健康状态 + 可选视觉投影器
 export interface KbModel {
   ok: boolean
   missing: boolean
@@ -49,6 +60,7 @@ export interface KbModel {
   path: string | null
   size: number | null
   dim: number | null
+  mmproj: KbMmproj
 }
 
 // 单个知识库：配置 + 来源统计（getConfig 快照派生，非持久化字段为 sources/stats）
@@ -61,7 +73,7 @@ export interface KbItem {
   minScore: number
   createdAt: number
   sources: KbSourceEntry[]
-  stats: { files: number; chunks: number; stale: number }
+  stats: { files: number; chunks: number; stale: number; images: number }
 }
 
 // getConfig 快照 v2：全局模型 + 总开关 + 库列表 + 聚合统计
@@ -75,13 +87,14 @@ export interface KbConfigPayload {
   indexProgress: KbProgress
   status: KbStatus
   kbs: KbItem[]
-  totals: { files: number; chunks: number }
+  totals: { files: number; chunks: number; images: number }
   staleTotal: number
 }
 
 // 来源统计（扫描派生，非持久化）
 export interface KbSourceEntry extends KbSourceConfig {
   fileCount: number
+  imageCount: number
   chunkCount: number
   indexedFiles: number
   staleCount: number
@@ -96,6 +109,7 @@ export interface KbHit {
   heading: string
   text: string
   score: number
+  kind?: 'image' | 'text'
   kbId?: string
   kbName?: string
 }
@@ -128,6 +142,8 @@ interface ElectronKbApi {
   kbSetKb(kbId: string, patch: KbItemPatch): Promise<KbConfigResult>
   kbPickModel(): Promise<{ canceled: boolean; path?: string; name?: string; size?: number; error?: string }>
   kbSetModel(modelPath: string): Promise<KbConfigResult>
+  kbPickMmproj(): Promise<{ canceled: boolean; path?: string; name?: string; size?: number; error?: string }>
+  kbSetMmproj(p: string | null): Promise<KbConfigResult>
   kbAddSource(kbId: string): Promise<{ canceled: boolean; dir?: string; error?: string; config?: KbConfigPayload }>
   kbRemoveSource(kbId: string, dir: string): Promise<KbConfigResult>
   kbReindex(opts?: { kbId?: string; force?: boolean }): Promise<{ started: boolean; error?: string; cancelled?: boolean }>
@@ -161,6 +177,8 @@ export const kbApi = {
   setKb: (kbId: string, patch: KbItemPatch): Promise<KbConfigResult | null> => api()?.kbSetKb(kbId, patch) ?? Promise.resolve(null),
   pickModel: (): Promise<{ canceled: boolean; path?: string; name?: string; size?: number; error?: string } | null> => api()?.kbPickModel() ?? Promise.resolve(null),
   setModel: (modelPath: string): Promise<KbConfigResult | null> => api()?.kbSetModel(modelPath) ?? Promise.resolve(null),
+  pickMmproj: (): Promise<{ canceled: boolean; path?: string; name?: string; size?: number; error?: string } | null> => api()?.kbPickMmproj() ?? Promise.resolve(null),
+  setMmproj: (p: string | null): Promise<KbConfigResult | null> => api()?.kbSetMmproj(p) ?? Promise.resolve(null),
   addSource: (kbId: string): Promise<{ canceled: boolean; dir?: string; error?: string; config?: KbConfigPayload } | null> => api()?.kbAddSource(kbId) ?? Promise.resolve(null),
   removeSource: (kbId: string, dir: string): Promise<KbConfigResult | null> => api()?.kbRemoveSource(kbId, dir) ?? Promise.resolve(null),
   reindex: (opts?: { kbId?: string; force?: boolean }): Promise<{ started: boolean; error?: string; cancelled?: boolean } | null> => api()?.kbReindex(opts) ?? Promise.resolve(null),

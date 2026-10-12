@@ -1,7 +1,8 @@
-// ============ 知识库（本地 RAG）主模块 v2：多知识库 ============
+// ============ 知识库（本地 RAG）主模块 v2：多知识库 + 多模态 ============
 // 托管第二个 llama-server 实例（--embedding --pooling mean，CPU 优先）做本地嵌入，
 // 索引 <userData>/knowledge/index/<kbId>/ 下按文件分片的向量库；检索供 AI 对话自动注入。
 // 模型全局共用（一个 GGUF 一个嵌入服务）；多库各自 sources/索引目录/开关，查询合并。
+// 可选视觉投影器（mmproj）：配置后来源文件夹内图片一并嵌入（图文同空间），探针降级保文本。
 // 结构镜像 electron-ai-engine.cjs：注入 logger、startToken 防僵尸迁移、handle() 错误兜底、
 // taskkill 树杀。本模块只在 Electron 主进程加载；纯 Node 下 electron require 失败被吞，
 // 导出函数仍可直接调用（KB_LIVE harness 用）。boot 不自动启动——首次查询/索引时按需拉起。
@@ -44,6 +45,9 @@ const DEFAULT_GLOBAL = {
   modelSize: null,
   modelMtimeMs: null,
   dim: null,
+  mmprojPath: null,      // 视觉投影器（可选）：配置后索引来源文件夹内图片（多模态嵌入）
+  mprojSize: null,       // mmproj 指纹（图片分片增量判定用，文本分片不校验）
+  mprojMtimeMs: null,
   autoInject: true,
   injectCharBudget: 6000,
   lastPort: null,
@@ -130,7 +134,7 @@ const newKbId = () => Date.now().toString(36) + Math.random().toString(36).slice
 // 补齐/夹紧 v2 字段（kbs 元素逐个校正，坏数据不致命）
 function fillConfig(raw) {
   const g = { ...DEFAULT_GLOBAL }
-  for (const k of ['modelPath', 'modelSize', 'modelMtimeMs', 'dim', 'lastPort']) {
+  for (const k of ['modelPath', 'modelSize', 'modelMtimeMs', 'dim', 'mmprojPath', 'mprojSize', 'mprojMtimeMs', 'lastPort']) {
     if (raw[k] != null) g[k] = raw[k]
   }
   if (typeof raw.autoInject === 'boolean') g.autoInject = raw.autoInject
@@ -231,6 +235,24 @@ function modelStat() {
   }
 }
 
+// 视觉投影器指纹：配置存在且为 GGUF 才生效；文件丢失视为未配置（payload 标 missing，不阻断文本）
+function mprojStat() {
+  const cfg = readKbJson()
+  if (!cfg.mmprojPath) return { active: false, missing: false }
+  try {
+    const st = fs.statSync(cfg.mmprojPath)
+    if (!st.isFile()) return { active: false, missing: true }
+    const head = Buffer.alloc(4)
+    const fd = fs.openSync(cfg.mmprojPath, 'r')
+    fs.readSync(fd, head, 0, 4, 0)
+    fs.closeSync(fd)
+    if (head.toString('latin1') !== 'GGUF') return { active: false, missing: true }
+    return { active: true, missing: false, path: cfg.mmprojPath, size: st.size }
+  } catch {
+    return { active: false, missing: true }
+  }
+}
+
 // ============ 嵌入服务状态机 ============
 // phase ∈ stopped | starting | running | stopping | failed（服务全局单例：一个模型供所有库共用）
 let phase = 'stopped'
@@ -242,6 +264,7 @@ let error = null
 let child = null
 let startToken = 0
 let startPromise = null    // ensureRunning 单飞
+let imageSupport = { ok: null, error: null }   // 图片嵌入探测结果：null=未探测/未配置
 
 function snapshot() {
   return {
@@ -356,9 +379,11 @@ async function runBackend(b, token, attempts, modelPath) {
   const free = await findFreePort()
   if (token !== startToken) return false
   if (!free) { attempts[b] = '候选端口全部被占用'; return false }
+  const mps = mprojStat()
   const args = [
     '--host', '127.0.0.1', '--port', String(free),
     '--model', modelPath,
+    ...(mps.active ? ['--mmproj', mps.path] : []),
     '--embedding', '--pooling', 'mean', '--ctx-size', '2048', '--no-webui',
     ...(b === 'vulkan' ? ['-ngl', '999'] : ['-ngl', '0', '-t', String(Math.max(1, os.cpus().length - 2))])
   ]
@@ -401,7 +426,15 @@ async function runBackend(b, token, attempts, modelPath) {
       error = null
       writeKbJson({ lastPort: free })
       pushStatus()
-      log('INFO', `嵌入服务就绪: http://127.0.0.1:${free} (dim=${v.length})`)
+      log('INFO', `嵌入服务就绪: http://127.0.0.1:${free} (dim=${v.length})${mps.active ? ' +mmproj' : ''}`)
+      // 图片嵌入能力探测（异步不阻塞文本就绪；失败仅降级图片索引，文本链路不受影响）
+      imageSupport = { ok: null, error: null }
+      if (mps.active) {
+        probeImageEmbedding(free).then((r) => {
+          imageSupport = r
+          pushStatus()
+        }).catch(() => { imageSupport = { ok: false, error: '探测异常' } })
+      }
       c.once('exit', () => {
         if (token !== startToken || phase !== 'running') return
         phase = 'stopped'
@@ -440,6 +473,23 @@ function onDimProbed(dim) {
     wipeAllIndexes()
   }
   if (cfg.dim !== dim) writeKbJson({ dim })
+}
+
+// 1×1 透明 PNG：探测 /v1/embeddings 是否接受图片输入（格式/能力以服务端实际回答为准）
+const PROBE_PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+async function probeImageEmbedding(port_) {
+  try {
+    const r = await postJson(port_, '/v1/embeddings', {
+      input: [[{ type: 'image_url', image_url: { url: `data:image/png;base64,${PROBE_PNG_B64}` } }]],
+    }, 20_000)
+    const v = vecFromEntry(r && r.data && r.data[0])
+    if (!v || !v.length) throw new Error('嵌入响应无向量数据')
+    log('INFO', `图片嵌入探测通过（dim=${v.length}）`)
+    return { ok: true, error: null }
+  } catch (e) {
+    log('WARN', `图片嵌入探测失败：${e.message}（图片索引将跳过，文本不受影响）`)
+    return { ok: false, error: e.message }
+  }
 }
 
 // ============ start / stop / kill ============
@@ -555,6 +605,7 @@ function kill() {
   }
   phase = 'stopped'
   pid = null
+  imageSupport = { ok: null, error: null }
 }
 
 // ============ 嵌入调用 ============
@@ -570,6 +621,22 @@ async function embedTexts(baseUrl, texts) {
       if (!v || !v.length) throw new Error('嵌入响应无向量数据')
       out.push(lib.normalizeVec(v))
     }
+  }
+  return out
+}
+
+// ============ 图片嵌入（多模态） ============
+// 请求格式单点收敛：OpenAI content-parts 约定（image_url data URL）。服务端不支持/格式不符
+// ⇒ 抛错（调用方按 skipped 处理，文本链路不受影响）；格式调整只改此函数。
+async function embedImages(baseUrl, dataUrls) {
+  const out = []
+  for (const url of dataUrls) {
+    const r = await postJson(new URL(baseUrl).port, '/v1/embeddings', {
+      input: [[{ type: 'image_url', image_url: { url } }]],
+    }, EMBED_TIMEOUT_MS * 2)   // 视觉塔首图含加载开销
+    const v = vecFromEntry(r && r.data && r.data[0])
+    if (!v || !v.length) throw new Error('图片嵌入响应无向量数据')
+    out.push(lib.normalizeVec(v))
   }
   return out
 }
@@ -656,11 +723,11 @@ function loadShard(kbId, name) {
     chunks.push({ heading: c.heading || '', text: c.text || '', offset: c.offset || 0, vec })
   }
   const entry = {
-    meta: { path: shard.path, dir: shard.dir, title: shard.title, dim: shard.dim, size: shard.size, mtimeMs: shard.mtimeMs, chunkCount: chunks.length },
+    meta: { path: shard.path, dir: shard.dir, title: shard.title, dim: shard.dim, size: shard.size, mtimeMs: shard.mtimeMs, kind: shard.kind || 'text', chunkCount: chunks.length },
     chunks,
   }
   b.shardCache.set(name, entry)
-  b.metaCache.set(name, { ...entry.meta, modelSize: shard.modelSize, modelMtimeMs: shard.modelMtimeMs, truncated: !!shard.truncated, skipped: shard.skipped || null })
+  b.metaCache.set(name, { ...entry.meta, modelSize: shard.modelSize, modelMtimeMs: shard.modelMtimeMs, mprojSize: shard.mprojSize, mprojMtimeMs: shard.mprojMtimeMs, truncated: !!shard.truncated, skipped: shard.skipped || null })
   return entry
 }
 
@@ -672,8 +739,9 @@ function shardMeta(kbId, name) {
   if (!shard) { clearCaches(kbId, name); b.published.delete(name); return null }
   const meta = {
     path: shard.path, dir: shard.dir, title: shard.title, dim: shard.dim,
-    size: shard.size, mtimeMs: shard.mtimeMs,
+    size: shard.size, mtimeMs: shard.mtimeMs, kind: shard.kind || 'text',
     modelSize: shard.modelSize, modelMtimeMs: shard.modelMtimeMs,
+    mprojSize: shard.mprojSize, mprojMtimeMs: shard.mprojMtimeMs,
     truncated: !!shard.truncated, skipped: shard.skipped || null,
     chunkCount: Array.isArray(shard.chunks) ? shard.chunks.length : 0,
   }
@@ -695,17 +763,52 @@ function pushProgress(force = false) {
 function shardStale(meta, stat, g) {
   if (!meta) return true
   return lib.shouldReindex(
-    { version: 1, size: meta.size, mtimeMs: meta.mtimeMs, modelSize: meta.modelSize, modelMtimeMs: meta.modelMtimeMs, dim: meta.dim, skipped: meta.skipped },
+    { version: 1, size: meta.size, mtimeMs: meta.mtimeMs, modelSize: meta.modelSize, modelMtimeMs: meta.modelMtimeMs, dim: meta.dim, skipped: meta.skipped, kind: meta.kind, mprojSize: meta.mprojSize, mprojMtimeMs: meta.mprojMtimeMs },
     { size: stat.size, mtimeMs: stat.mtimeMs },
-    { size: g.modelSize, mtimeMs: g.modelMtimeMs, dim: g.dim }
+    { size: g.modelSize, mtimeMs: g.modelMtimeMs, dim: g.dim, mprojSize: g.mprojSize, mprojMtimeMs: g.mprojMtimeMs }
   )
 }
 
 // 单文件索引：读取 → 归一 → 分块 → 嵌入 → 写 staging 分片。返回 staging 文件名（或 null）
-// kb 提供分块粒度；g 提供模型指纹
+// kb 提供分块粒度；g 提供模型指纹（含 mproj）。图片文件走多模态分支（一图一分片一向量）
 async function indexFile(token, file, kb, g, baseUrl) {
   const isGemma = /embeddinggemma/i.test(path.basename(g.modelPath || ''))
   const name = lib.shardName(file.path)
+  if (file.kind === 'image') {
+    const title = path.basename(file.path, path.extname(file.path))
+    let shard
+    try {
+      const raw = fs.readFileSync(file.path)
+      const mime = /\.png$/i.test(file.path) ? 'image/png'
+        : /\.jpe?g$/i.test(file.path) ? 'image/jpeg'
+          : /\.webp$/i.test(file.path) ? 'image/webp'
+            : /\.gif$/i.test(file.path) ? 'image/gif' : 'image/bmp'
+      const vecs = await embedImages(baseUrl, [`data:${mime};base64,${raw.toString('base64')}`])
+      shard = {
+        version: lib.SHARD_VERSION, kind: 'image', path: file.path, dir: file.dir, size: file.size, mtimeMs: file.mtimeMs,
+        title, dim: g.dim, modelPath: g.modelPath, modelSize: g.modelSize, modelMtimeMs: g.modelMtimeMs,
+        mprojSize: g.mprojSize, mprojMtimeMs: g.mprojMtimeMs, truncated: false, skipped: null,
+        chunks: [{ heading: '', text: `图片：${title}`, offset: 0, vec: lib.encodeVec(vecs[0]) }],
+      }
+    } catch (e) {
+      log('WARN', `图片嵌入失败（按跳过落盘）: ${file.path} — ${e.message}`)
+      shard = {
+        version: lib.SHARD_VERSION, kind: 'image', path: file.path, dir: file.dir, size: file.size, mtimeMs: file.mtimeMs,
+        title, dim: null, modelPath: g.modelPath, modelSize: g.modelSize, modelMtimeMs: g.modelMtimeMs,
+        mprojSize: g.mprojSize, mprojMtimeMs: g.mprojMtimeMs, truncated: false, skipped: 'image-embed-failed', chunks: [],
+      }
+    }
+    const staging = name.replace(/\.json$/, '.staging.json')
+    try {
+      fs.mkdirSync(indexDir(kb.id), { recursive: true })
+      lib.writeShardAtomic(path.join(indexDir(kb.id), staging), shard)
+    } catch (e) {
+      log('ERROR', `写分片失败 ${staging}: ${e.message}`)
+      return null
+    }
+    indexProgress = { ...indexProgress, chunks: indexProgress.chunks + shard.chunks.length }
+    return staging
+  }
   let raw = null
   try { raw = fs.readFileSync(file.path) } catch {
     log('WARN', `读取失败跳过: ${file.path}`)
@@ -782,7 +885,7 @@ async function reindex(opts = {}) {
       } catch { /* 忽略 */ }
 
       const dirs = kb.sources.map((s) => s.dir)
-      const files = dirs.length ? lib.scanSources(dirs) : []
+      const files = dirs.length ? lib.scanSources(dirs, { images: mprojStat().active }) : []
       indexProgress = { runId, phase: 'embedding', kbId: kb.id, kbName: kb.name, dir: null, file: null, done: 0, total: files.length, chunks: indexProgress.chunks, error: null }
       pushProgress(true)
 
@@ -889,7 +992,7 @@ async function query(text, topK) {
       const entry = loadShard(k.id, name)
       if (!entry || !entry.chunks.length) continue
       for (const c of entry.chunks) {
-        entries.push({ vec: c.vec, path: entry.meta.path, title: entry.meta.title, dir: entry.meta.dir, heading: c.heading, text: c.text })
+        entries.push({ vec: c.vec, path: entry.meta.path, title: entry.meta.title, dir: entry.meta.dir, heading: c.heading, text: c.text, kind: entry.meta.kind || 'text' })
       }
     }
     if (!entries.length) continue
@@ -938,32 +1041,47 @@ function maybeAutoReindex() {
 function getConfig() {
   const cfg = readKbJson()
   const ms = modelStat()
-  const model = { ok: !ms.missing, missing: ms.missing, error: ms.missing ? ms.reason : null, path: cfg.modelPath, size: ms.size || null, dim: cfg.dim }
+  const mps = mprojStat()
+  const model = {
+    ok: !ms.missing, missing: ms.missing, error: ms.missing ? ms.reason : null, path: cfg.modelPath, size: ms.size || null, dim: cfg.dim,
+    mmproj: {
+      configured: !!cfg.mmprojPath,
+      active: mps.active,
+      missing: !mps.active && !!cfg.mmprojPath,
+      path: mps.active ? mps.path : (cfg.mmprojPath || null),
+      size: mps.active ? mps.size : null,
+      imageOk: mps.active ? imageSupport.ok : null,        // null=探测中/未探测
+      imageError: mps.active && imageSupport.ok === false ? imageSupport.error : null,
+    },
+  }
   const kbs = []
-  const totals = { files: 0, chunks: 0 }
+  const totals = { files: 0, chunks: 0, images: 0 }
   let staleTotal = 0
   for (const kb of cfg.kbs) {
     const b = loadPublished(kb.id)
     const sources = []
-    const stats = { files: 0, chunks: 0, stale: 0 }
+    const stats = { files: 0, chunks: 0, stale: 0, images: 0 }
     try {
       const dirs = kb.sources.map((s) => s.dir)
-      const files = dirs.length ? lib.scanSources(dirs) : []
+      const files = dirs.length ? lib.scanSources(dirs, { images: mprojStat().active }) : []
       for (const src of kb.sources) {
         const list = files.filter((f) => f.dir === src.dir)
-        let chunks = 0, indexed = 0, stale = 0, bytes = 0
+        let chunks = 0, indexed = 0, stale = 0, bytes = 0, images = 0
         // 来源目录当前不可访问 = 失联（保留分片与记录，UI 徽章提示；不自动移除）
         const missing = list.length === 0 && !fs.existsSync(src.dir)
         for (const f of list) {
           const name = lib.shardName(f.path)
           const meta = b.published.has(name) ? shardMeta(kb.id, name) : null
           bytes += f.size
+          if (f.kind === 'image') images++
           if (shardStale(meta, f, cfg)) { stale++; stats.stale++; staleTotal++ }
           else { indexed++; chunks += meta.chunkCount || 0; stats.chunks += meta.chunkCount || 0; totals.chunks += meta.chunkCount || 0 }
         }
         stats.files += list.length
+        stats.images += images
         totals.files += list.length
-        sources.push({ dir: src.dir, addedAt: src.addedAt, fileCount: list.length, chunkCount: chunks, indexedFiles: indexed, staleCount: stale, missing, bytes })
+        totals.images += images
+        sources.push({ dir: src.dir, addedAt: src.addedAt, fileCount: list.length, imageCount: images, chunkCount: chunks, indexedFiles: indexed, staleCount: stale, missing, bytes })
       }
     } catch { /* 扫描失败按空处理 */ }
     kbs.push({
@@ -1117,6 +1235,64 @@ function setModel(absPath) {
   return { ok: true, config: getConfig() }
 }
 
+// 视觉投影器（可选，多模态）：落定指纹 + 服务重启；不清任何索引——图片分片靠 mproj
+// 指纹自动判 stale，文本分片不受影响；清除后图片分片由重建时的 deleteShardsNotIn 收敛
+function setMmproj(absPath) {
+  if (indexing) return { ok: false, error: '索引进行中，请稍后再试' }
+  const p = absPath ? path.resolve(String(absPath)) : null
+  if (p != null) {
+    if (!fs.existsSync(p) || !fs.statSync(p).isFile()) return { ok: false, error: '视觉投影器文件不存在' }
+    try {
+      const head = Buffer.alloc(4)
+      const fd = fs.openSync(p, 'r')
+      fs.readSync(fd, head, 0, 4, 0)
+      fs.closeSync(fd)
+      if (head.toString('latin1') !== 'GGUF') return { ok: false, error: '不是有效的 GGUF 模型文件' }
+    } catch (e) { return { ok: false, error: e.message } }
+  }
+  const st = p ? fs.statSync(p) : null
+  const cfg = readKbJson()
+  const changed = (cfg.mmprojPath || null) !== p
+  writeKbJson(p ? { mmprojPath: p, mprojSize: st.size, mprojMtimeMs: st.mtimeMs } : { mmprojPath: null, mprojSize: null, mprojMtimeMs: null })
+  if (changed) {
+    log('INFO', p ? `视觉投影器已设置: ${p}（图片分片将按指纹自动重建，文本分片保留）` : '视觉投影器已清除（图片分片将在下次重建时移除）')
+    if (phase === 'running' || phase === 'starting') {
+      stop()
+      const t = setInterval(() => {
+        if (phase === 'stopping') return
+        clearInterval(t)
+        start().catch(() => {})
+      }, 120)
+    }
+  }
+  return { ok: true, config: getConfig() }
+}
+
+// mmproj 文件选择（原生对话框）：只校验不持久化，落定走 set-mmproj
+async function pickMmproj() {
+  const dialog = electron?.dialog
+  if (!dialog || typeof dialog.showOpenDialog !== 'function') throw new Error('当前环境不支持文件选择')
+  const r = await dialog.showOpenDialog({
+    title: '选择视觉投影器（mmproj GGUF，可选）',
+    filters: [{ name: 'GGUF 模型', extensions: ['gguf'] }],
+    properties: ['openFile'],
+  })
+  if (r.canceled || !r.filePaths || !r.filePaths.length) return { canceled: true }
+  const p = path.resolve(r.filePaths[0])
+  try {
+    const st = fs.statSync(p)
+    if (!st.isFile()) return { canceled: false, error: '不是有效的文件' }
+    const head = Buffer.alloc(4)
+    const fd = fs.openSync(p, 'r')
+    fs.readSync(fd, head, 0, 4, 0)
+    fs.closeSync(fd)
+    if (head.toString('latin1') !== 'GGUF') return { canceled: false, error: '不是有效的 GGUF 模型文件' }
+    return { canceled: false, path: p, name: path.basename(p), size: st.size }
+  } catch (e) {
+    return { canceled: false, error: e.message }
+  }
+}
+
 // 目录来源（单库作用域）：库内拒绝重复与嵌套；跨库允许收录同一目录（分片按库隔离）
 async function addSource(kbId) {
   const dialog = electron?.dialog
@@ -1162,7 +1338,7 @@ function removeSource(kbId, dir) {
   // 收敛：把该库剩余来源之外的分片清掉
   try {
     const b = loadPublished(kbId)
-    const files = rest.length ? lib.scanSources(rest.map((s) => s.dir)) : []
+    const files = rest.length ? lib.scanSources(rest.map((s) => s.dir), { images: mprojStat().active }) : []
     const keep = new Set(files.map((f) => lib.shardName(f.path)))
     b.published = keep
     for (const name of Array.from(b.shardCache.keys())) if (!keep.has(name)) b.shardCache.delete(name)
@@ -1202,6 +1378,8 @@ function initKnowledgeBase(loggerFn) {
     handle('kb:set-kb', (_e, kbId, patch) => setKbConfig(kbId, patch))
     handle('kb:pick-model', () => pickModel())
     handle('kb:set-model', (_e, p) => setModel(p))
+    handle('kb:pick-mmproj', () => pickMmproj())
+    handle('kb:set-mmproj', (_e, p) => setMmproj(p))
     handle('kb:add-source', (_e, kbId) => addSource(kbId))
     handle('kb:remove-source', (_e, kbId, dir) => removeSource(kbId, dir))
     handle('kb:reindex', (_e, opts) => { reindex(opts || {}).catch(() => {}); return { started: true } })
@@ -1211,7 +1389,7 @@ function initKnowledgeBase(loggerFn) {
   }
   return {
     start, stop, kill, ensureRunning, snapshot, getConfig,
-    reindex, cancelIndex, query, setModel, setConfig,
+    reindex, cancelIndex, query, setModel, setMmproj, mprojStat, setConfig,
     createKb, renameKb, deleteKb, setKbConfig,
     addSourcePath: (kbId, dir) => {
       // harness 直驱：绕过原生对话框（与 addSource 同一套校验）

@@ -295,8 +295,70 @@ t('formatKbBlock 预算与截断', () => {
   assert.strictEqual(lib.formatKbBlock([], {}), '')
 })
 
+// ============ 多模态（图片索引） ============
+console.log('multimodal (image indexing)')
+t('isImagePath 扩展名判定（大小写不敏感，误报拒绝）', () => {
+  for (const p of ['a.png', 'b.JPG', 'c.jpeg', 'd.WebP', 'e.gif', 'f.bmp']) assert.strictEqual(lib.isImagePath(p), true, p)
+  for (const p of ['a.md', 'a.txt', 'a.gguf', 'a.png.md', 'png', '']) assert.strictEqual(lib.isImagePath(p), false, p)
+})
+t('scanSources images 开关：图片与 md 并列收集 + kind 标记', () => {
+  const imgDir = path.join(sandbox, 'img-tree')
+  fs.mkdirSync(imgDir, { recursive: true })
+  fs.writeFileSync(path.join(imgDir, 'doc.md'), '# d')
+  fs.writeFileSync(path.join(imgDir, 'pic.png'), Buffer.from([0x89, 0x50]))
+  fs.writeFileSync(path.join(imgDir, 'shot.JPEG'), Buffer.from([0xff, 0xd8]))
+  fs.writeFileSync(path.join(imgDir, 'skip.txt'), 'x')
+  // 默认（未开 images）：只收 md，kind 全为 text
+  const textOnly = lib.scanSources([imgDir])
+  assert.deepStrictEqual(textOnly.map((f) => f.kind), ['text'])
+  // 开 images：图片并列收集，kind 正确，.txt 仍排除
+  const both = lib.scanSources([imgDir], { images: true })
+  const byName = Object.fromEntries(both.map((f) => [path.basename(f.path), f.kind]))
+  assert.strictEqual(byName['doc.md'], 'text')
+  assert.strictEqual(byName['pic.png'], 'image')
+  assert.strictEqual(byName['shot.JPEG'], 'image')
+  assert.strictEqual(Object.keys(byName).length, 3, '.txt 不应被收集')
+})
+t('scanSources 图片超大同样标 oversized', () => {
+  const big = path.join(tree, 'b', 'big.png')
+  fs.writeFileSync(big, Buffer.alloc(100))
+  const files = lib.scanSources([path.join(tree, 'b')], { maxFileBytes: 50, images: true })
+  const f = files.find((x) => x.path === big)
+  assert.ok(f && f.oversized === true && f.kind === 'image')
+})
+t('shouldReindex mproj 指纹：仅 image 分片参与，text 分片不受影响', () => {
+  const stat = { size: 100, mtimeMs: 1000 }
+  const model = { size: 9, mtimeMs: 9, dim: 4 }
+  const imgShard = { version: 1, kind: 'image', size: 100, mtimeMs: 1000, modelSize: 9, modelMtimeMs: 9, dim: 4, skipped: null, mprojSize: 555, mprojMtimeMs: 66 }
+  const txtShard = { ...imgShard, kind: 'text' }
+  // 不带 mproj 指纹（老调用方/未配置投影器）：两者都不 stale
+  assert.strictEqual(lib.shouldReindex(imgShard, stat, model), false)
+  assert.strictEqual(lib.shouldReindex(txtShard, stat, model), false)
+  // mproj 指纹一致：image 不 stale
+  assert.strictEqual(lib.shouldReindex(imgShard, stat, { ...model, mprojSize: 555, mprojMtimeMs: 66 }), false)
+  // mproj size / mtime 任一变化：仅 image stale
+  assert.strictEqual(lib.shouldReindex(imgShard, stat, { ...model, mprojSize: 556, mprojMtimeMs: 66 }), true)
+  assert.strictEqual(lib.shouldReindex(txtShard, stat, { ...model, mprojSize: 556, mprojMtimeMs: 66 }), false)
+  assert.strictEqual(lib.shouldReindex(imgShard, stat, { ...model, mprojSize: 555, mprojMtimeMs: 67 }), true)
+  assert.strictEqual(lib.shouldReindex(txtShard, stat, { ...model, mprojSize: 555, mprojMtimeMs: 67 }), false)
+  // 清除投影器（指纹为 null）：不触发 stale——图片分片的移除交给重建时 deleteShardsNotIn
+  assert.strictEqual(lib.shouldReindex(imgShard, stat, { ...model, mprojSize: null, mprojMtimeMs: null }), false)
+})
+t('formatKbBlock 图片命中：[图片] 标记 + 无正文 + 预算约束', () => {
+  const hits = [
+    { kind: 'image', title: 'shot', path: 'D:\\k\\shot.png', text: '图片：shot', heading: '' },
+    { title: '文档', heading: '', text: '正文内容', path: 'D:\\k\\a.md' },
+  ]
+  const block = lib.formatKbBlock(hits, { perHitChars: 100, budgetChars: 4000 })
+  assert.ok(block.includes('[1] [图片] 《shot》（D:\\k\\shot.png）'), block)
+  assert.ok(!block.includes('图片：shot'), '图片条目不应带正文')
+  assert.ok(block.includes('[2] 《文档》'))
+  // 预算耗尽：图片条目整条丢弃（不留残行）
+  assert.strictEqual(lib.formatKbBlock([{ kind: 'image', title: 'x', path: 'D:\\x\\a.png' }], { budgetChars: 10 }), '')
+})
+
 // ============ 主模块状态机（纯 Node，无二进制；v2 多库） ============
-const kb = require('../electron-kb.cjs').initKnowledgeBase((level, msg) => {
+let kb = require('../electron-kb.cjs').initKnowledgeBase((level, msg) => {
   if (process.env.KB_VERBOSE) console.log(`    [kb:${level}] ${msg}`)
 })
 const kbJsonPath = path.join(sandbox, '.hypora-kb', 'kb.json')
@@ -517,6 +579,103 @@ async function main() {
     }
   })
 
+  // —— setMmproj：校验/设置/清除 + 图片扫描门控 + 换投影器仅 image 分片 stale ——
+  await ta('setMmproj 校验 + 扫描门控 + mproj 指纹分片分离', async () => {
+    // 图文来源：1 md + 1 png
+    const src = path.join(sandbox, 'mm-src')
+    fs.mkdirSync(src, { recursive: true })
+    const mdPath = path.join(src, 'note.md')
+    const imgPath = path.join(src, 'photo.png')
+    fs.writeFileSync(mdPath, '# 笔记\n\n内容')
+    fs.writeFileSync(imgPath, Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+    const kbc = kb.createKb('图文库')
+    const idC = kbc.config.kbs.find((k) => k.name === '图文库').id
+    assert.strictEqual(kb.addSourcePath(idC, src).ok, true)
+    // 未配置投影器：扫描只收 md，mmproj 未配置
+    const c1 = kb.getConfig()
+    const s1 = c1.kbs.find((k) => k.id === idC).sources.find((s) => s.dir === src)
+    assert.strictEqual(s1.fileCount, 1)
+    assert.strictEqual(s1.imageCount, 0)
+    assert.strictEqual(c1.model.mmproj.configured, false)
+    assert.strictEqual(c1.model.mmproj.active, false)
+    // 非 GGUF 拒绝；拒绝后配置保持未设置
+    const bad = path.join(sandbox, 'bad-mm.bin')
+    fs.writeFileSync(bad, 'not gguf')
+    assert.strictEqual(kb.setMmproj(bad).ok, false)
+    assert.ok(kb.setMmproj(bad).error.includes('GGUF'))
+    assert.strictEqual(kb.getConfig().model.mmproj.configured, false)
+    // 设置有效 GGUF 投影器 → 图片进入扫描，mmproj 字段落位
+    const mm = path.join(sandbox, 'mm.gguf')
+    fs.writeFileSync(mm, Buffer.concat([Buffer.from('GGUF'), Buffer.alloc(8)]))
+    const r1 = kb.setMmproj(mm)
+    assert.strictEqual(r1.ok, true)
+    const mm1 = r1.config.model.mmproj
+    assert.strictEqual(mm1.configured, true)
+    assert.strictEqual(mm1.active, true)
+    assert.strictEqual(mm1.missing, false)
+    assert.strictEqual(mm1.size, fs.statSync(mm).size)
+    const s2 = r1.config.kbs.find((k) => k.id === idC).sources.find((s) => s.dir === src)
+    assert.strictEqual(s2.fileCount, 2)
+    assert.strictEqual(s2.imageCount, 1)
+    assert.strictEqual(r1.config.totals.images, 1)
+  })
+
+  // —— mproj 指纹分片分离（重载模块模拟重启：published 从磁盘重扫，与生产一致） ——
+  // 说明：published 集合每进程只扫一次磁盘（staging→publish 是生产写入口），
+  // harness 直写分片必须配一次模块重载才可见。
+  await ta('mproj 指纹分片分离：换投影器仅 image stale / 清除后 text 保留', async () => {
+    const src = path.join(sandbox, 'mm-src')
+    const mdPath = path.join(src, 'note.md')
+    const imgPath = path.join(src, 'photo.png')
+    const mm2 = path.join(sandbox, 'mm2.gguf')
+    fs.writeFileSync(mm2, Buffer.concat([Buffer.from('GGUF'), Buffer.alloc(20)]))
+    // 手工落盘 text/image 两枚指纹齐全的分片（与当前 kb.json 指纹一致）
+    const raw = JSON.parse(fs.readFileSync(kbJsonPath, 'utf-8'))
+    const cfg0 = kb.getConfig()
+    const idC = cfg0.kbs.find((k) => k.name === '图文库').id
+    const dir = path.join(indexRoot, idC)
+    const baseShard = { version: lib.SHARD_VERSION, dir: src, title: 't', dim: raw.dim, modelSize: raw.modelSize, modelMtimeMs: raw.modelMtimeMs, truncated: false, skipped: null, chunks: [] }
+    lib.writeShardAtomic(path.join(dir, lib.shardName(mdPath)), { ...baseShard, path: mdPath, size: fs.statSync(mdPath).size, mtimeMs: fs.statSync(mdPath).mtimeMs, kind: 'text' })
+    lib.writeShardAtomic(path.join(dir, lib.shardName(imgPath)), { ...baseShard, path: imgPath, size: fs.statSync(imgPath).size, mtimeMs: fs.statSync(imgPath).mtimeMs, kind: 'image', mprojSize: raw.mprojSize, mprojMtimeMs: raw.mprojMtimeMs })
+    // 重载模块：published 从磁盘重扫（等价应用重启后的状态）
+    kb.kill()
+    delete require.cache[require.resolve('../electron-kb.cjs')]
+    const kb2 = require('../electron-kb.cjs').initKnowledgeBase(() => {})
+    const c3 = kb2.getConfig()
+    const s3 = c3.kbs.find((k) => k.id === idC).sources.find((s) => s.dir === src)
+    assert.strictEqual(s3.staleCount, 0, '指纹齐全的两枚分片均应新鲜')
+    assert.strictEqual(s3.indexedFiles, 2)
+    // 换投影器（不同 size）→ 仅 image 分片 stale，text 分片不动
+    const r2 = kb2.setMmproj(mm2)
+    assert.strictEqual(r2.ok, true)
+    const s4 = r2.config.kbs.find((k) => k.id === idC).sources.find((s) => s.dir === src)
+    assert.strictEqual(s4.staleCount, 1, '仅图片分片应待重建')
+    assert.strictEqual(s4.indexedFiles, 1, '文本分片应保持新鲜')
+    // 清除投影器 → 图片退出扫描，text 分片保留且新鲜
+    const r3 = kb2.setMmproj(null)
+    assert.strictEqual(r3.ok, true)
+    assert.strictEqual(r3.config.model.mmproj.configured, false)
+    const s5 = r3.config.kbs.find((k) => k.id === idC).sources.find((s) => s.dir === src)
+    assert.strictEqual(s5.fileCount, 1, '清除后图片退出扫描')
+    assert.strictEqual(s5.imageCount, 0)
+    assert.strictEqual(s5.indexedFiles, 1, 'text 分片保留且新鲜')
+    // 换模型（指纹变化）全清索引：重置内存桶与磁盘，给后续测试干净现场
+    const mm3 = path.join(sandbox, 'mm3.gguf')
+    fs.writeFileSync(mm3, Buffer.concat([Buffer.from('GGUF'), Buffer.alloc(12)]))
+    assert.strictEqual(kb2.setModel(mm3).ok, true)
+    // 投影器文件丢失 → missing 标记 + 扫描退回纯文本
+    assert.strictEqual(kb2.setMmproj(mm2).ok, true)
+    fs.rmSync(mm2)
+    const c6 = kb2.getConfig()
+    assert.strictEqual(c6.model.mmproj.configured, true)
+    assert.strictEqual(c6.model.mmproj.active, false)
+    assert.strictEqual(c6.model.mmproj.missing, true)
+    const s6 = c6.kbs.find((k) => k.id === idC).sources.find((s) => s.dir === src)
+    assert.strictEqual(s6.fileCount, 1, '投影器失效时图片退出扫描')
+    // 后续测试继续用重载后的实例（旧实例已 kill）
+    kb = kb2
+  })
+
   // —— 空索引查询零开销短路（published 全空 → 不触服务） ——
   await ta('空索引查询零开销短路（不触服务）', async () => {
     const cfg = kb.getConfig()
@@ -560,6 +719,70 @@ async function main() {
       assert.strictEqual(kb.setKbConfig(idB, { enabled: false }).ok, true)
       const q2 = await kb.query('知识库用什么模型？')
       assert.ok(q2.hits.length > 0 && q2.hits.every((h) => h.kbId === idA), '停用库不应出现在命中里')
+      await kb.stop()
+    })
+  }
+
+  // ============ KB_LIVE=1 + KB_MMPROJ=<mmproj.gguf>：多模态端到端（Windows 上选通） ============
+  if (process.env.KB_LIVE === '1' && process.env.KB_MMPROJ) {
+    console.log('KB_LIVE multimodal (image indexing)')
+    const mproj = process.env.KB_MMPROJ
+    assert.ok(fs.existsSync(mproj), 'KB_MMPROJ 必须指向真实 mmproj gguf')
+    await ta('图文混合索引 → 探针 → 文本查询命中图片 → 清除后图片分片移除', async () => {
+      assert.strictEqual(kb.setModel(model).ok, true)
+      assert.strictEqual(kb.setMmproj(mproj).ok, true)
+      const cfg0 = kb.getConfig()
+      const idA = cfg0.kbs[0].id
+      const dir = path.join(sandbox, 'mm-live')
+      fs.mkdirSync(dir, { recursive: true })
+      fs.writeFileSync(path.join(dir, 'doc.md'), '# 图文笔记\n\n这张照片拍的是海边日落，橙色天空与剪影。\n\n## 山谷\n\n另一张图是清晨的山谷与雾气。')
+      // 64×64 纯红 PNG（真实可解码位图，供视觉塔嵌入）
+      const png = Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAOklEQVR4nO3BAQ0AAADCoPdMbQ8HFAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwKkBK5QAAdgCaLIAAAAASUVORK5CYII=',
+        'base64'
+      )
+      fs.writeFileSync(path.join(dir, 'red.png'), png)
+      assert.strictEqual(kb.addSourcePath(idA, dir).ok, true)
+      const ri = await kb.reindex({ force: true })
+      assert.ok(ri.started && !ri.error, `reindex: ${ri.error || ''}`)
+      const cfg = kb.getConfig()
+      const a = cfg.kbs.find((k) => k.id === idA)
+      assert.ok(a.stats.images > 0, '应索引到图片')
+      assert.strictEqual(cfg.status.phase, 'running')
+      // 等探针收敛（就绪后异步执行，20s 超时）
+      let mm = null
+      for (let i = 0; i < 40; i++) {
+        mm = kb.getConfig().model.mmproj
+        if (mm.imageOk !== null) break
+        await new Promise((r) => setTimeout(r, 500))
+      }
+      console.log(`    探针 imageOk=${mm.imageOk} error=${mm.imageError || '-'}`)
+      if (mm.imageOk === false) {
+        console.log('    （图片嵌入不可用：跳过命中断言；文本链路不受影响的断言仍执行）')
+        assert.ok(a.stats.chunks > 0, '文本链路不受图片嵌入失败影响')
+        await kb.stop()
+        return
+      }
+      assert.ok(a.stats.chunks > 0, '文本分片应存在')
+      // 文本查询：命中列表应带 kind 标注；图文/文图相似度样例佐证空间对齐
+      for (const qtext of ['海边日落的照片', '一张红色的图片']) {
+        const q = await kb.query(qtext)
+        assert.ok(q.hits.length > 0, `「${qtext}」应有命中`)
+        assert.ok(q.hits.every((h) => h.kind === 'image' || h.kind === 'text'), '命中应带 kind 标注')
+        const imgHit = q.hits.find((h) => h.kind === 'image')
+        const sample = q.hits.slice(0, 5).map((h) => `${h.kind}:${path.basename(h.path)}=${h.score.toFixed(3)}`).join(', ')
+        console.log(`    「${qtext}」top5: ${sample}`)
+        if (!imgHit) console.log(`    ⚠ 「${qtext}」未命中图片（图文对齐度与 minScore 相关，非管线错误）`)
+        else assert.ok(lib.formatKbBlock(q.hits).includes('[图片]'), '注入块应渲染 [图片] 标记')
+      }
+      // 清除投影器 → 重建 → 图片分片移除、文本分片保留
+      assert.strictEqual(kb.setMmproj(null).ok, true)
+      const ri2 = await kb.reindex({ force: true })
+      assert.ok(ri2.started && !ri2.error, `reindex2: ${ri2.error || ''}`)
+      const cfg2 = kb.getConfig()
+      const a2 = cfg2.kbs.find((k) => k.id === idA)
+      assert.strictEqual(a2.stats.images, 0, '清除后图片退出扫描')
+      assert.ok(a2.stats.chunks > 0, '文本分片应保留')
       await kb.stop()
     })
   }

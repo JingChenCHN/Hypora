@@ -20,6 +20,25 @@
           <button class="kb-link" @click="kbStore.pickAndSetModel()">{{ p?.model.path ? '更换模型' : '选择模型' }}</button>
         </div>
         <div class="kb-sub">{{ modelSub }}</div>
+        <!-- 视觉投影器（可选）：配置后来源文件夹内图片一并索引；探针失败降级显示原因 -->
+        <div class="kb-row kb-mmproj">
+          <span class="kb-dot" :class="mmprojDot"></span>
+          <span class="kb-mmproj-label">视觉投影器</span>
+          <template v-if="mmprojName">
+            <span class="kb-mono">{{ mmprojName }}</span>
+            <span class="kb-sub">{{ formatBytes(p?.model.mmproj?.size) }}</span>
+            <span v-if="p?.model.mmproj?.missing" class="kb-badge warn">文件缺失</span>
+            <el-tooltip v-else-if="imageOk === false && mmprojImageError" :content="mmprojImageError" placement="top">
+              <span class="kb-badge warn">图片不可用</span>
+            </el-tooltip>
+            <span class="kb-spacer"></span>
+            <button class="kb-link" :disabled="kbStore.indexing" @click="kbStore.pickAndSetMmproj()">更换</button>
+            <button class="kb-link" :disabled="kbStore.indexing" @click="onClearMmproj">清除</button>
+          </template>
+          <template v-else>
+            <span class="kb-sub">未配置——选择 GGUF 视觉投影器后，文件夹内图片将一并索引</span>
+          </template>
+        </div>
       </div>
 
       <!-- —— 知识库列表 —— -->
@@ -71,10 +90,10 @@
         </template>
         <button class="kb-link" @click="kbStore.openIndexDir()">打开索引目录</button>
         <span class="kb-spacer"></span>
-        <span v-if="p?.totals.chunks" class="kb-sub">共 {{ p.totals.chunks.toLocaleString() }} 段 · {{ p.totals.files }} 个文件</span>
+        <span v-if="p?.totals.chunks" class="kb-sub">共 {{ p.totals.chunks.toLocaleString() }} 段 · {{ p.totals.files }} 个文件<template v-if="p.totals.images"> · {{ p.totals.images }} 图片</template></span>
       </div>
 
-      <p class="kb-hint">索引与检索全部在本机完成：文件改动后下次对话时自动增量更新；检索片段仅注入对话上下文，文件内容不会上传。</p>
+      <p class="kb-hint">索引与检索全部在本机完成：文件改动后下次对话时自动增量更新；检索片段仅注入对话上下文，文件内容不会上传。配置视觉投影器后，来源文件夹中的图片（png/jpg/webp/gif/bmp）也会被索引，命中时以「[图片] 文件名」注入对话。</p>
     </div>
   </el-drawer>
 </template>
@@ -120,9 +139,42 @@ const modelSub = computed(() => {
   return [size, dim].filter(Boolean).join('') || v.model.path
 })
 
+// —— 视觉投影器行 ——
+const mmprojName = computed(() => {
+  const mp = p.value?.model.mmproj?.path
+  if (!mp) return ''
+  return mp.split(/[\\/]/).pop() || mp
+})
+
+const mmprojDot = computed(() => {
+  const mm = p.value?.model.mmproj
+  if (mm?.configured && (mm.missing || mm.imageOk === false)) return 'err'
+  if (mm?.active) return 'ok'
+  return 'off'
+})
+
+const imageOk = computed(() => p.value?.model.mmproj?.imageOk ?? null)
+
+const mmprojImageError = computed(() => p.value?.model.mmproj?.imageError || '')
+
+// 清除前确认：图片分片会在下次索引时清掉，文本分片不受影响
+async function onClearMmproj() {
+  try {
+    await ElMessageBox.confirm(
+      '清除视觉投影器？来源文件夹中的图片将不再被索引（文本索引不受影响）。',
+      '清除视觉投影器',
+      { confirmButtonText: '清除', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch {
+    return
+  }
+  await kbStore.clearMmproj()
+}
+
 // —— 库行 ——
 function kbStat(kb: KbItem): string {
   const parts = [`${kb.stats.files} 个文件`, `已索引 ${kb.stats.files - kb.stats.stale}`, `${kb.stats.chunks.toLocaleString()} 段`]
+  if (kb.stats.images) parts.push(`${kb.stats.images} 图片`)
   if (kb.stats.stale) parts.push(`${kb.stats.stale} 待更新`)
   return parts.join(' · ')
 }
@@ -269,6 +321,17 @@ function formatBytes(n?: number | null): string {
   font-size: 12px;
   color: var(--text-primary);
   word-break: break-all;
+}
+/* 视觉投影器行：可选配置，弱化存在（内部 hair 线分隔） */
+.kb-mmproj {
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-color);
+}
+.kb-mmproj-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
 }
 .kb-kb-name {
   font-size: 12.5px;

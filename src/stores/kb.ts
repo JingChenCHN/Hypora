@@ -110,6 +110,21 @@ export const useKbStore = defineStore('kb', () => {
     applyResult(await kbApi.setModel(picked.path!), '模型设置失败')
   }
 
+  // 视觉投影器（可选）：选择 → 设置；null = 清除。失败不改本地状态。
+  async function pickAndSetMmproj() {
+    const picked = await kbApi.pickMmproj()
+    if (!picked || picked.canceled) return
+    if (picked.error) {
+      ElMessage.warning(picked.error)
+      return
+    }
+    applyResult(await kbApi.setMmproj(picked.path!), '视觉投影器设置失败')
+  }
+
+  async function clearMmproj() {
+    applyResult(await kbApi.setMmproj(null), '清除失败')
+  }
+
   // ============ 知识库 CRUD ============
   async function createKb(name?: string) {
     const r = await kbApi.create(name)
@@ -210,6 +225,15 @@ export const useKbStore = defineStore('kb', () => {
     const lines = ['--- 知识库检索（参考资料：回答时优先依据以下内容；与问题无关请忽略，不要虚构资料外的事实）---']
     let used = 0
     hits.forEach((h, i) => {
+      // 图片命中：无正文，只标注文件名与路径（与主进程 formatKbBlock 同款）
+      if (h.kind === 'image') {
+        const head = `[${i + 1}] [图片] 《${h.title || '图片'}》（${h.path}）`
+        const cost = head.length + 2
+        if (used + cost > budget) return
+        used += cost
+        lines.push(head)
+        return
+      }
       const head = `[${i + 1}] 《${h.title || '文档'}》${h.heading ? ' · ' + h.heading : ''}`
       const body = (h.text || '').slice(0, PER_HIT_CHARS)
       const cost = head.length + body.length + 2
@@ -223,7 +247,7 @@ export const useKbStore = defineStore('kb', () => {
   return {
     status, payload, progress, managerOpen,
     autoInject, modelOk, chunkTotal, activeKbs, ready, indexing, dot, statusText,
-    bind, refresh, setAutoInject, pickAndSetModel,
+    bind, refresh, setAutoInject, pickAndSetModel, pickAndSetMmproj, clearMmproj,
     createKb, renameKb, deleteKb, setKb,
     addSource, removeSource, reindex, cancelIndex, openIndexDir,
     retrieveForChat,
