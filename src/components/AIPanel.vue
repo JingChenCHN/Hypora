@@ -239,16 +239,16 @@
             <span class="prov-dot" :class="kbStore.dot"></span>
             <span class="kb-status-text">{{ kbStore.statusText || '—' }}</span>
             <span class="flex-spacer"></span>
-            <button class="link-btn" @click="kbDialogVisible = true">管理</button>
+            <button class="link-btn" @click="kbStore.managerOpen = true">管理</button>
           </div>
           <div class="config-row">
             <label>自动引用</label>
-            <el-switch :model-value="kbStore.enabled" size="small" @change="onKbToggle" />
-            <span class="config-hint">对话时自动检索收录的笔记并注入上下文</span>
+            <el-switch :model-value="kbStore.autoInject" size="small" @change="onKbToggle" />
+            <span class="config-hint">对话时自动检索启用的知识库并注入上下文</span>
           </div>
           <div v-if="kbStore.indexing && kbStore.progress" class="kb-indexing">
-            <div class="dl-track"><div class="dl-fill" :style="{ width: kbPct + '%' }"></div></div>
-            <div class="dl-readout">{{ kbStore.progress.file || (kbStore.progress.phase === 'scanning' ? '扫描文件…' : '') }} {{ kbStore.progress.done }}/{{ kbStore.progress.total }} · {{ kbStore.progress.chunks }} 段</div>
+            <div class="dl-track"><div class="kb-fill" :style="{ transform: `scaleX(${kbPct / 100})` }"></div></div>
+            <div class="dl-readout">{{ kbIndexReadout }}</div>
           </div>
         </div>
       </div>
@@ -345,8 +345,7 @@
         <input ref="imgInputRef" type="file" accept="image/*" multiple hidden @change="handleImageSelect" />
       </div>
 
-      <!-- 知识库管理对话框（桌面端） -->
-      <KnowledgeDialog v-if="hasKb" v-model="kbDialogVisible" />
+      <!-- 知识库管理抽屉挂载在 App.vue（大栏目），此处只保留状态条 -->
     </div>
   </div>
 </template>
@@ -361,7 +360,6 @@ import { testChatCompletion, testConnection as testExternalConn } from '@/utils/
 import { hasAiEngine, engineApi } from '@/utils/aiEngine'
 import { hasKnowledge } from '@/utils/knowledge'
 import { useKbStore } from '@/stores/kb'
-import KnowledgeDialog from './KnowledgeDialog.vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import LottieLoading from './LottieLoading.vue'
 import assistantAnim from '@/assets/ai-assistant-bubble.json'
@@ -373,14 +371,24 @@ const aiStore = useAIStore()
 // —— 知识库（桌面端专用；Web/Tauri 恒为 false，整块不渲染）——
 const hasKb = hasKnowledge()
 const kbStore = useKbStore()
-const kbDialogVisible = ref(false)
 const kbPct = computed(() => {
   const pr = kbStore.progress
   if (!pr || !pr.total) return 0
   return Math.min(100, Math.round((pr.done / pr.total) * 100))
 })
+// 索引进度 readout：库名（多库轮转时可辨）+ 当前文件 + 计数
+const kbIndexReadout = computed(() => {
+  const pr = kbStore.progress
+  if (!pr) return ''
+  const parts: string[] = []
+  if (pr.kbName) parts.push(pr.kbName)
+  if (pr.file) parts.push(pr.file)
+  else if (pr.phase === 'scanning') parts.push('扫描文件…')
+  parts.push(`${pr.done}/${pr.total}`, `${pr.chunks} 段`)
+  return parts.join(' · ')
+})
 function onKbToggle(v: string | number | boolean) {
-  void kbStore.setEnabled(Boolean(v))
+  void kbStore.setAutoInject(Boolean(v))
 }
 
 // 重命名输入自动聚焦（script setup 局部指令）
@@ -1216,6 +1224,13 @@ function copyText(text: string) {
   .kb-status-text {
     font-size: 12.5px;
     color: var(--text-primary);
+  }
+  /* kb 索引进度填充：scaleX 变换（避免 width 布局动画），左起原点 */
+  .kb-fill {
+    height: 100%;
+    background: var(--text-primary);
+    transform-origin: left;
+    transition: transform 0.2s linear;
   }
   .kb-indexing {
     margin-top: 6px;

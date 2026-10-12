@@ -389,6 +389,7 @@ function createMenu() {
         { type: 'separator' },
         { label: '偏好设置', click: () => mainWindow.webContents.send('menu-action', 'preference-settings') },
         { label: '开发者模式', click: () => mainWindow.webContents.send('menu-action', 'dev-mode') },
+        { label: '知识库管理', click: () => mainWindow.webContents.send('menu-action', 'kb-manage') },
         { type: 'separator' },
         { label: '退出', accelerator: 'Alt+F4', click: () => app.quit() }
       ]

@@ -1,0 +1,383 @@
+<template>
+  <!-- 知识库大栏目（桌面端）：独立管理抽屉——检索模型 + 多知识库 CRUD + 索引进度 -->
+  <el-drawer v-model="visible" size="640px" :close-on-click-modal="false" class="kbm-drawer">
+    <template #header>
+      <div class="kbm-header">
+        <span class="kbm-title">知识库</span>
+        <span class="kbm-sub">本地检索 · 对话时自动注入启用的库</span>
+      </div>
+    </template>
+
+    <div class="kbm-body">
+      <!-- —— 检索模型（全局共用） —— -->
+      <div class="kb-sec-label">检索模型</div>
+      <div class="kb-card">
+        <div class="kb-row">
+          <span class="kb-dot" :class="modelDot"></span>
+          <span class="kb-mono">{{ modelName }}</span>
+          <span v-if="p && !p.model.ok" class="kb-badge warn">文件缺失</span>
+          <span class="kb-spacer"></span>
+          <button class="kb-link" @click="kbStore.pickAndSetModel()">{{ p?.model.path ? '更换模型' : '选择模型' }}</button>
+        </div>
+        <div class="kb-sub">{{ modelSub }}</div>
+      </div>
+
+      <!-- —— 知识库列表 —— -->
+      <div class="kb-sec-label">知识库</div>
+      <div v-if="!p?.kbs.length" class="kb-empty">尚无知识库——新建后收录文件夹，其中的 Markdown 会被本地索引</div>
+      <div v-for="kb in p?.kbs || []" :key="kb.id" class="kb-card kb-kb">
+        <div class="kb-row">
+          <span class="kb-kb-name" :class="{ off: !kb.enabled }">{{ kb.name }}</span>
+          <span v-if="!kb.enabled" class="kb-badge">已停用</span>
+          <span class="kb-spacer"></span>
+          <button class="kb-link" :disabled="kbStore.indexing" @click="onRename(kb)">重命名</button>
+          <button class="kb-link" :disabled="kbStore.indexing" @click="onDelete(kb)">删除</button>
+          <el-switch
+            :model-value="kb.enabled"
+            size="small"
+            :disabled="kbStore.indexing"
+            @change="(v: string | number | boolean) => kbStore.setKb(kb.id, { enabled: Boolean(v) })"
+          />
+        </div>
+        <div class="kb-sub">{{ kbStat(kb) }}</div>
+
+        <!-- 来源子列表 -->
+        <div v-if="kb.sources.length" class="kb-sources">
+          <div v-for="s in kb.sources" :key="s.dir" class="kb-source">
+            <span class="kb-source-name">{{ baseName(s.dir) }}</span>
+            <span v-if="s.missing" class="kb-badge warn">失联</span>
+            <span v-else-if="s.staleCount" class="kb-badge">待更新 {{ s.staleCount }}</span>
+            <span class="kb-spacer"></span>
+            <button class="kb-link" :disabled="kbStore.indexing" @click="kbStore.reindex({ kbId: kb.id, force: true })">重建</button>
+            <button class="kb-link" :disabled="kbStore.indexing" @click="onRemoveSource(kb, s)">移除</button>
+          </div>
+        </div>
+        <div v-else class="kb-sub">尚未收录文件夹</div>
+        <button class="kb-add" :disabled="kbStore.indexing" @click="kbStore.addSource(kb.id)">＋ 添加文件夹</button>
+      </div>
+      <button class="kb-add" :disabled="kbStore.indexing" @click="onCreate">＋ 新建知识库</button>
+
+      <!-- —— 索引进度 —— -->
+      <template v-if="kbStore.indexing && kbStore.progress">
+        <div class="kb-track"><div class="kb-fill" :style="{ transform: `scaleX(${progressPct / 100})` }"></div></div>
+        <div class="kb-readout">{{ progressText }}</div>
+      </template>
+
+      <!-- —— 操作行 —— -->
+      <div class="kb-actions">
+        <button class="kb-link" :disabled="kbStore.indexing" @click="kbStore.reindex({})">全部重新索引</button>
+        <template v-if="kbStore.indexing">
+          <button class="kb-link" @click="kbStore.cancelIndex()">取消索引</button>
+        </template>
+        <button class="kb-link" @click="kbStore.openIndexDir()">打开索引目录</button>
+        <span class="kb-spacer"></span>
+        <span v-if="p?.totals.chunks" class="kb-sub">共 {{ p.totals.chunks.toLocaleString() }} 段 · {{ p.totals.files }} 个文件</span>
+      </div>
+
+      <p class="kb-hint">索引与检索全部在本机完成：文件改动后下次对话时自动增量更新；检索片段仅注入对话上下文，文件内容不会上传。</p>
+    </div>
+  </el-drawer>
+</template>
+
+<script setup lang="ts">
+import { computed, watch } from 'vue'
+import { ElMessageBox } from 'element-plus'
+import { useKbStore } from '@/stores/kb'
+import type { KbItem, KbSourceEntry } from '@/utils/knowledge'
+
+const kbStore = useKbStore()
+const p = computed(() => kbStore.payload)
+
+// 抽屉开关代理到 store（AIPanel / Toolbar / 原生菜单都能打开同一抽屉）
+const visible = computed({
+  get: () => kbStore.managerOpen,
+  set: (v: boolean) => { kbStore.managerOpen = v },
+})
+
+// 打开时对账一次（别处可能改过配置）
+watch(visible, (v) => { if (v) void kbStore.refresh() })
+
+// —— 模型行 ——
+const modelName = computed(() => {
+  const mp = p.value?.model.path
+  if (!mp) return '未选择模型'
+  return mp.split(/[\\/]/).pop() || mp
+})
+
+const modelDot = computed(() => {
+  if (kbStore.ready) return 'ok'
+  if (p.value && !p.value.model.ok) return 'err'
+  return 'off'
+})
+
+const modelSub = computed(() => {
+  const v = p.value
+  if (!v) return '检测中…'
+  if (!v.model.path) return '选择本地 GGUF 嵌入模型（如 EmbeddingGemma）'
+  const size = v.model.size ? formatBytes(v.model.size) : ''
+  const dim = v.model.dim ? ` · ${v.model.dim} 维` : ''
+  if (!v.model.ok) return [v.model.error || '模型文件不存在', size].filter(Boolean).join(' · ')
+  return [size, dim].filter(Boolean).join('') || v.model.path
+})
+
+// —— 库行 ——
+function kbStat(kb: KbItem): string {
+  const parts = [`${kb.stats.files} 个文件`, `已索引 ${kb.stats.files - kb.stats.stale}`, `${kb.stats.chunks.toLocaleString()} 段`]
+  if (kb.stats.stale) parts.push(`${kb.stats.stale} 待更新`)
+  return parts.join(' · ')
+}
+
+async function onCreate() {
+  try {
+    const { value } = await ElMessageBox.prompt('为新知识库起个名字（可留空使用默认名）', '新建知识库', {
+      confirmButtonText: '创建',
+      cancelButtonText: '取消',
+      inputPlaceholder: `知识库 ${(p.value?.kbs.length || 0) + 1}`,
+      inputValidator: (v: string) => !v || !v.trim() || v.trim().length <= 40 || '名称不超过 40 字',
+    })
+    await kbStore.createKb(value)
+  } catch { /* 取消 */ }
+}
+
+async function onRename(kb: KbItem) {
+  try {
+    const { value } = await ElMessageBox.prompt('新的名称', '重命名知识库', {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      inputValue: kb.name,
+      inputValidator: (v: string) => (v && v.trim() ? v.trim().length <= 40 || '名称不超过 40 字' : '名称不能为空'),
+    })
+    await kbStore.renameKb(kb.id, value)
+  } catch { /* 取消 */ }
+}
+
+async function onDelete(kb: KbItem) {
+  try {
+    await ElMessageBox.confirm(
+      `删除「${kb.name}」？该库的索引将一并清除，来源文件不受影响。`,
+      '删除知识库',
+      { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch {
+    return
+  }
+  await kbStore.deleteKb(kb.id)
+}
+
+async function onRemoveSource(kb: KbItem, s: KbSourceEntry) {
+  try {
+    await ElMessageBox.confirm(
+      `从「${kb.name}」移除「${baseName(s.dir)}」？该库中对应的索引将被删除，文件本身不受影响。`,
+      '移除来源',
+      { confirmButtonText: '移除', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch {
+    return
+  }
+  await kbStore.removeSource(kb.id, s.dir)
+}
+
+// —— 进度 ——
+const progressPct = computed(() => {
+  const pr = kbStore.progress
+  if (!pr || !pr.total) return 0
+  return Math.min(100, Math.round((pr.done / pr.total) * 100))
+})
+
+const progressText = computed(() => {
+  const pr = kbStore.progress
+  if (!pr) return ''
+  const parts: string[] = []
+  if (pr.kbName) parts.push(pr.kbName)
+  if (pr.file) parts.push(pr.file)
+  else if (pr.phase === 'scanning') parts.push('扫描文件…')
+  parts.push(`${pr.done}/${pr.total}`, `${pr.chunks.toLocaleString()} 段`)
+  return parts.join(' · ')
+})
+
+function baseName(dir: string): string {
+  return dir.split(/[\\/]/).filter(Boolean).pop() || dir
+}
+
+function formatBytes(n?: number | null): string {
+  if (!n) return '—'
+  const gb = n / (1024 * 1024 * 1024)
+  if (gb >= 1) return `${gb.toFixed(1)} GB`
+  const mb = n / (1024 * 1024)
+  if (mb >= 1) return `${Math.round(mb)} MB`
+  return `${Math.max(1, Math.round(n / 1024))} KB`
+}
+</script>
+
+<style scoped lang="scss">
+/* 抽屉头：衬线标题 + micro 副标（AdminUsers 先例） */
+.kbm-header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+
+  .kbm-title {
+    font-family: var(--font-serif);
+    font-size: 16px;
+    color: var(--text-primary);
+  }
+
+  .kbm-sub {
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    color: var(--text-muted);
+  }
+}
+
+/* 区块微标签：与 AIPanel .model-card-label 同规格 */
+.kb-sec-label {
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin: 18px 0 8px;
+  &:first-of-type { margin-top: 0; }
+}
+/* 平卡：hair 描边、方角、无阴影 */
+.kb-card {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 2px;
+}
+.kb-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.kb-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--border-color);
+  &.ok { background: var(--el-color-success); }
+  &.err { background: var(--el-color-danger); }
+  &.off { background: var(--border-color); }
+}
+.kb-mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+.kb-kb-name {
+  font-size: 12.5px;
+  color: var(--text-primary);
+  &.off { color: var(--text-muted); }
+}
+.kb-badge {
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color);
+  padding: 0 4px;
+  border-radius: 2px;
+  &.warn { color: var(--el-color-danger); border-color: var(--el-color-danger); }
+}
+.kb-spacer { flex: 1; }
+.kb-sub {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  word-break: break-all;
+}
+/* 来源子列表：缩进 hair 左线，层次靠缩进而非堆卡 */
+.kb-sources {
+  margin: 4px 0 2px;
+  padding-left: 10px;
+  border-left: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.kb-source {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.kb-source-name {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.kb-empty {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  border: 1px dashed var(--border-color);
+  border-radius: 2px;
+  line-height: 1.6;
+}
+.kb-link {
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 2px 4px;
+  border-radius: 2px;
+  transition: all 0.2s;
+  flex-shrink: 0;
+  &:hover:not(:disabled) { color: var(--text-primary); background: var(--bg-tertiary); }
+  &:disabled { opacity: 0.4; cursor: default; }
+}
+.kb-add {
+  align-self: flex-start;
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 2px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.2s;
+  margin-bottom: 8px;
+  &:hover:not(:disabled) { color: var(--text-primary); border-color: var(--text-secondary); }
+  &:disabled { opacity: 0.4; cursor: default; }
+}
+/* 进度：2px 方角轨道，墨色填充，scaleX 变换（避免 width 布局动画） */
+.kb-track {
+  height: 2px;
+  margin-top: 14px;
+  background: var(--border-color);
+  overflow: hidden;
+}
+.kb-fill {
+  height: 100%;
+  background: var(--text-primary);
+  transform-origin: left;
+  transition: transform 0.2s linear;
+}
+.kb-readout {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  margin-top: 4px;
+  word-break: break-all;
+}
+.kb-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 14px;
+}
+.kb-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.6;
+  margin: 10px 0 0;
+}
+</style>

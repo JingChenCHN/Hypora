@@ -389,6 +389,17 @@ function buildDocPrompt(title, body, isGemma) {
   return isGemma ? `title: ${title || 'none'} | text: ${body}` : body
 }
 
+// ============ 多库合并 ============
+// 各库已按自身 topK/minScore 截取（防大库淹没小库）；扁平化后按 score 全局降序取前 globalTopK
+function mergeKbHits(perKbResults, globalTopK) {
+  const all = []
+  for (const r of perKbResults || []) {
+    if (r && Array.isArray(r.hits)) all.push(...r.hits)
+  }
+  all.sort((a, b) => (b.score || 0) - (a.score || 0))
+  return all.slice(0, Math.max(1, globalTopK || 8))
+}
+
 // ============ 注入块格式化 ============
 // hits: [{ title, heading, text, path?, score? }]；逐条截断 + 总预算截断
 function formatKbBlock(hits, opts = {}) {
@@ -418,6 +429,7 @@ module.exports = {
   decodeVec,
   normalizeVec,
   cosineTopK,
+  mergeKbHits,
   shouldReindex,
   scanSources,
   shardName,

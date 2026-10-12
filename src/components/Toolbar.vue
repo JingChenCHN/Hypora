@@ -77,6 +77,10 @@
             <div class="menu-group" @click="runFileCommand('preferenceSettings')">
               <el-icon><Setting /></el-icon><span>偏好设置</span>
             </div>
+            <!-- 知识库大栏目（桌面端本地 RAG；Web/Tauri 无 kb* API 不渲染） -->
+            <div v-if="hasKnowledge()" class="menu-group" @click="runFileCommand('kbManage')">
+              <el-icon><Collection /></el-icon><span>知识库管理</span>
+            </div>
             <div class="menu-group" @click="runFileCommand('devMode')">
               <el-icon><Tools /></el-icon><span>开发者模式</span>
             </div>
@@ -281,10 +285,11 @@ import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useDocumentStore } from '@/stores/document'
 import { useAIStore } from '@/stores/ai'
 import { hasAiEngine } from '@/utils/aiEngine'
+import { hasKnowledge } from '@/utils/knowledge'
 import {
   Document, ArrowDown, ArrowRight, DocumentAdd, FolderOpened, Download, DocumentCopy, Files, Picture, PictureFilled,
   Postcard, MagicStick, Grid, ChatDotSquare, List, Select, Link, Minus, Top,
-  Search, Sunny, Moon, Coffee, Brush, Pouring, Menu, FullScreen, Cloudy, Upload, Box, Setting, Tools
+  Search, Sunny, Moon, Coffee, Brush, Pouring, Menu, FullScreen, Cloudy, Upload, Box, Setting, Tools, Collection
 } from '@element-plus/icons-vue'
 import { readMdFile, readPdfFile } from '@/utils/export'
 import TrafficLights from './TrafficLights.vue'
@@ -415,6 +420,9 @@ function handleFileCommand(command: string) {
       break
     case 'preferenceSettings':
       emit('export', 'preference-settings')
+      break
+    case 'kbManage':
+      emit('export', 'kb-manage')
       break
     case 'devMode':
       emit('export', 'dev-mode')

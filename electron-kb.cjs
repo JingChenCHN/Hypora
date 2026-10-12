@@ -1,6 +1,7 @@
-// ============ 知识库（本地 RAG）主模块 ============
+// ============ 知识库（本地 RAG）主模块 v2：多知识库 ============
 // 托管第二个 llama-server 实例（--embedding --pooling mean，CPU 优先）做本地嵌入，
-// 索引 <userData>/knowledge/index/ 下按文件分片的向量库；检索供 AI 对话自动注入。
+// 索引 <userData>/knowledge/index/<kbId>/ 下按文件分片的向量库；检索供 AI 对话自动注入。
+// 模型全局共用（一个 GGUF 一个嵌入服务）；多库各自 sources/索引目录/开关，查询合并。
 // 结构镜像 electron-ai-engine.cjs：注入 logger、startToken 防僵尸迁移、handle() 错误兜底、
 // taskkill 树杀。本模块只在 Electron 主进程加载；纯 Node 下 electron require 失败被吞，
 // 导出函数仍可直接调用（KB_LIVE harness 用）。boot 不自动启动——首次查询/索引时按需拉起。
@@ -23,6 +24,8 @@ try {
 } catch { electron = null }
 
 // ============ 常量 ============
+const KB_VERSION = 2
+const KB_MERGE_TOPK = 8              // 多库合并后的全局注入条数上限（各库先按自身 topK 截取）
 const KB_PORT_CANDIDATES = [8910, 8911, 8912, 8913, 8914, 8915, 8916, 8917, 8918, 8919]
 const HEALTH_TIMEOUT_MS = 45_000     // 300M Q8 模型冷启动数秒级；聊天路径另有 6s 上层预算
 const HEALTH_POLL_MS = 400
@@ -33,19 +36,28 @@ const BACKENDS = ['cpu', 'vulkan']   // 嵌入 CPU 优先：避开与聊天模�
 const RING_LIMIT = 200
 const STOP_EXIT_WAIT_MS = 3000
 const AUTO_REINDEX_COOLDOWN_MS = 30_000
-const DEFAULT_KB = {
-  version: 1,
+
+// 全局配置（模型 + 聊天注入总开关）；v1 的 enabled 语义 = 现在的 autoInject
+const DEFAULT_GLOBAL = {
+  version: KB_VERSION,
   modelPath: null,
   modelSize: null,
   modelMtimeMs: null,
   dim: null,
+  autoInject: true,
+  injectCharBudget: 6000,
+  lastPort: null,
+}
+// 单库默认（kb.json 的 kbs[] 元素）
+const DEFAULT_KB_ITEM = {
+  id: '',
+  name: '',
   enabled: true,
   topK: 5,
   chunkChars: 900,
   minScore: 0.3,
-  injectCharBudget: 6000,
   sources: [],
-  lastPort: null,
+  createdAt: 0,
 }
 
 // ============ 路径 ============
@@ -55,7 +67,8 @@ function kbRoot() {
   return path.join(os.homedir(), '.hypora-kb')
 }
 const kbJsonPath = () => path.join(kbRoot(), 'kb.json')
-const indexDir = () => path.join(kbRoot(), 'index')
+// 索引根（无 kbId）/ 单库索引目录（带 kbId）
+const indexDir = (kbId) => (kbId ? path.join(kbRoot(), 'index', String(kbId)) : path.join(kbRoot(), 'index'))
 
 // 二进制根：与聊天引擎共用一套 llama.cpp；KB 专属覆盖 → 引擎覆盖 → 常规解析
 function binRoot() {
@@ -107,17 +120,90 @@ function feedOutput(b, chunk) {
 }
 const tailLogs = (b, n) => (ringBuf[b] || []).slice(-n)
 
-// ============ 配置 ============
-function readKbJson() {
-  try {
-    const j = JSON.parse(fs.readFileSync(kbJsonPath(), 'utf-8')) || {}
-    return { ...DEFAULT_KB, ...j }
-  } catch { return { ...DEFAULT_KB } }
-}
+// ============ 配置（kb.json v2 + v1 迁移） ============
 const clamp = (v, lo, hi, dflt) => {
   const n = Number(v)
   return Number.isFinite(n) ? Math.min(hi, Math.max(lo, Math.round(n))) : dflt
 }
+const newKbId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 4)
+
+// 补齐/夹紧 v2 字段（kbs 元素逐个校正，坏数据不致命）
+function fillConfig(raw) {
+  const g = { ...DEFAULT_GLOBAL }
+  for (const k of ['modelPath', 'modelSize', 'modelMtimeMs', 'dim', 'lastPort']) {
+    if (raw[k] != null) g[k] = raw[k]
+  }
+  if (typeof raw.autoInject === 'boolean') g.autoInject = raw.autoInject
+  if (raw.injectCharBudget != null) g.injectCharBudget = clamp(raw.injectCharBudget, 1000, 12000, DEFAULT_GLOBAL.injectCharBudget)
+  const list = Array.isArray(raw.kbs) ? raw.kbs : []
+  g.kbs = list.map((k, i) => ({
+    ...DEFAULT_KB_ITEM,
+    ...k,
+    id: k.id || newKbId(),
+    name: String(k.name || `知识库 ${i + 1}`),
+    enabled: k.enabled !== false,
+    topK: clamp(k.topK, 1, 12, DEFAULT_KB_ITEM.topK),
+    chunkChars: clamp(k.chunkChars, 300, 2000, DEFAULT_KB_ITEM.chunkChars),
+    minScore: Math.min(1, Math.max(0, Number(k.minScore) || 0)),
+    sources: Array.isArray(k.sources) ? k.sources.filter((s) => s && s.dir) : [],
+    createdAt: k.createdAt || Date.now(),
+  }))
+  return g
+}
+
+// v1 → v2：单库迁移为「默认知识库」，并把平铺分片搬进 index/<kbId>/（幂等：仅 version!==2 时进入）
+function migrateConfig(raw) {
+  const g = fillConfig({})
+  for (const k of ['modelPath', 'modelSize', 'modelMtimeMs', 'dim', 'lastPort']) {
+    if (raw[k] != null) g[k] = raw[k]
+  }
+  if (raw.injectCharBudget != null) g.injectCharBudget = clamp(raw.injectCharBudget, 1000, 12000, DEFAULT_GLOBAL.injectCharBudget)
+  // v1 的 enabled 是「总开关」语义 → autoInject；新库各自 enabled 默认开
+  g.autoInject = typeof raw.autoInject === 'boolean' ? raw.autoInject : raw.enabled !== false
+  const kb = {
+    ...DEFAULT_KB_ITEM,
+    id: newKbId(),
+    name: '默认知识库',
+    topK: clamp(raw.topK, 1, 12, DEFAULT_KB_ITEM.topK),
+    chunkChars: clamp(raw.chunkChars, 300, 2000, DEFAULT_KB_ITEM.chunkChars),
+    minScore: Math.min(1, Math.max(0, Number(raw.minScore) || 0)),
+    sources: Array.isArray(raw.sources) ? raw.sources.filter((s) => s && s.dir) : [],
+    createdAt: Date.now(),
+  }
+  g.kbs = [kb]
+  // v1 平铺分片搬迁（非 staging 的 *.json → index/<kbId>/）；失败不致命，残留文件不进 published
+  let moved = 0
+  try {
+    const oldDir = indexDir()
+    if (fs.existsSync(oldDir)) {
+      const newDir = indexDir(kb.id)
+      for (const n of fs.readdirSync(oldDir)) {
+        if (!n.endsWith('.json') || n.endsWith('.staging.json')) continue
+        const p = path.join(oldDir, n)
+        try {
+          if (!fs.statSync(p).isFile()) continue
+          fs.mkdirSync(newDir, { recursive: true })
+          fs.renameSync(p, path.join(newDir, n))
+          moved++
+        } catch { /* 单文件失败忽略 */ }
+      }
+    }
+  } catch { /* 忽略 */ }
+  try {
+    fs.mkdirSync(kbRoot(), { recursive: true })
+    fs.writeFileSync(kbJsonPath(), JSON.stringify(g, null, 2))
+  } catch (e) { log('ERROR', `迁移写 kb.json 失败（内存 v2 兜底，下次启动重试）: ${e.message}`) }
+  log('INFO', `kb.json v${raw.version || 1} → v2 迁移完成（「${kb.name}」${kb.sources.length} 个来源${moved ? `，搬迁 ${moved} 个分片` : ''}）`)
+  return g
+}
+
+function readKbJson() {
+  let raw = {}
+  try { raw = JSON.parse(fs.readFileSync(kbJsonPath(), 'utf-8')) || {} } catch { raw = {} }
+  if (raw.version === KB_VERSION) return fillConfig(raw)
+  return migrateConfig(raw)
+}
+
 function writeKbJson(patch) {
   try {
     fs.mkdirSync(kbRoot(), { recursive: true })
@@ -146,7 +232,7 @@ function modelStat() {
 }
 
 // ============ 嵌入服务状态机 ============
-// phase ∈ stopped | starting | running | stopping | failed
+// phase ∈ stopped | starting | running | stopping | failed（服务全局单例：一个模型供所有库共用）
 let phase = 'stopped'
 let backend = null
 let port = null
@@ -346,12 +432,12 @@ async function runBackend(b, token, attempts, modelPath) {
   return false
 }
 
-// 维度落定：与已存 dim 不符 ⇒ 旧向量全部失效（清索引，等用户重建）
+// 维度落定：与已存 dim 不符 ⇒ 旧向量全部失效（清所有库索引，等用户重建）
 function onDimProbed(dim) {
   const cfg = readKbJson()
   if (cfg.dim && cfg.dim !== dim) {
-    log('WARN', `向量维度变化 ${cfg.dim} → ${dim}，清空旧索引`)
-    wipeIndex()
+    log('WARN', `向量维度变化 ${cfg.dim} → ${dim}，清空全部知识库索引`)
+    wipeAllIndexes()
   }
   if (cfg.dim !== dim) writeKbJson({ dim })
 }
@@ -488,51 +574,80 @@ async function embedTexts(baseUrl, texts) {
   return out
 }
 
-// ============ 索引库 ============
-// 可见性模型：published 集合 = 查询可见的分片快照；重建期间新分片写 <sha1>.staging.json，
+// ============ 索引库（按 kbId 分桶） ============
+// 可见性模型：每库 published 集合 = 查询可见的分片快照；重建期间新分片写 <sha1>.staging.json，
 // 完成时统一改名 + 原子换 published —— 查询在重建期间始终读到旧快照，无撕裂。
-let published = new Set()   // 分片文件名集合（查询快照）
-let shardCache = new Map()  // 文件名 → { meta, chunks: [{heading,text,offset,vec}] }
-let metaCache = new Map()   // 文件名 → 轻量元数据（统计/增量判定用，避免整片解析）
-let indexLoaded = false
+const kbIndex = new Map()   // kbId → { published:Set, shardCache:Map, metaCache:Map, loaded:boolean }
+function bucketOf(kbId) {
+  let b = kbIndex.get(kbId)
+  if (!b) {
+    b = { published: new Set(), shardCache: new Map(), metaCache: new Map(), loaded: false }
+    kbIndex.set(kbId, b)
+  }
+  return b
+}
 let runToken = 0
 let indexing = false
-let indexProgress = { runId: 0, phase: 'idle', dir: null, file: null, done: 0, total: 0, chunks: 0, error: null }
+let indexProgress = { runId: 0, phase: 'idle', kbId: null, kbName: null, dir: null, file: null, done: 0, total: 0, chunks: 0, error: null }
 let lastPushAt = 0
 let lastAutoScan = 0
 
-function loadPublished() {
-  if (indexLoaded) return
-  indexLoaded = true
-  try { fs.mkdirSync(indexDir(), { recursive: true }) } catch { /* 忽略 */ }
+function loadPublished(kbId) {
+  const b = bucketOf(kbId)
+  if (b.loaded) return b
+  b.loaded = true
+  const dir = indexDir(kbId)
+  try { fs.mkdirSync(dir, { recursive: true }) } catch { /* 忽略 */ }
   try {
-    for (const n of fs.readdirSync(indexDir())) {
-      if (n.endsWith('.json') && !n.endsWith('.staging.json')) published.add(n)
+    for (const n of fs.readdirSync(dir)) {
+      if (n.endsWith('.json') && !n.endsWith('.staging.json')) b.published.add(n)
+    }
+  } catch { /* 忽略 */ }
+  return b
+}
+
+function clearCaches(kbId, name) {
+  const b = bucketOf(kbId)
+  b.shardCache.delete(name)
+  b.metaCache.delete(name)
+}
+
+// 清空单库索引（内存桶 + 磁盘分片）
+function wipeIndex(kbId) {
+  const b = bucketOf(kbId)
+  b.published = new Set()
+  b.shardCache = new Map()
+  b.metaCache = new Map()
+  const dir = indexDir(kbId)
+  try {
+    for (const n of fs.readdirSync(dir)) {
+      if (n.endsWith('.json')) { try { fs.unlinkSync(path.join(dir, n)) } catch { /* 忽略 */ } }
     }
   } catch { /* 忽略 */ }
 }
 
-function clearCaches(name) {
-  shardCache.delete(name)
-  metaCache.delete(name)
-}
-
-function wipeIndex() {
-  published = new Set()
-  shardCache = new Map()
-  metaCache = new Map()
+// 清空全部库索引（换模型/维度变化 ⇒ 所有库向量失效）；顺带清 v1 平铺残留
+function wipeAllIndexes() {
+  const cfg = readKbJson()
+  for (const k of cfg.kbs) wipeIndex(k.id)
   try {
-    for (const n of fs.readdirSync(indexDir())) {
-      if (n.endsWith('.json')) { try { fs.unlinkSync(path.join(indexDir(), n)) } catch { /* 忽略 */ } }
+    const root = indexDir()
+    for (const n of fs.readdirSync(root)) {
+      const p = path.join(root, n)
+      try {
+        if (fs.statSync(p).isDirectory()) fs.rmSync(p, { recursive: true, force: true })
+        else if (n.endsWith('.json')) fs.unlinkSync(p)
+      } catch { /* 忽略 */ }
     }
   } catch { /* 忽略 */ }
 }
 
 // 惰性加载分片（首次全量解析后缓存；含 base64 向量解码）
-function loadShard(name) {
-  if (shardCache.has(name)) return shardCache.get(name)
-  const shard = lib.readShard(path.join(indexDir(), name))
-  if (!shard) { clearCaches(name); published.delete(name); return null }
+function loadShard(kbId, name) {
+  const b = bucketOf(kbId)
+  if (b.shardCache.has(name)) return b.shardCache.get(name)
+  const shard = lib.readShard(path.join(indexDir(kbId), name))
+  if (!shard) { clearCaches(kbId, name); b.published.delete(name); return null }
   const chunks = []
   for (const c of shard.chunks || []) {
     if (!c.vec) continue
@@ -544,16 +659,17 @@ function loadShard(name) {
     meta: { path: shard.path, dir: shard.dir, title: shard.title, dim: shard.dim, size: shard.size, mtimeMs: shard.mtimeMs, chunkCount: chunks.length },
     chunks,
   }
-  shardCache.set(name, entry)
-  metaCache.set(name, { ...entry.meta, modelSize: shard.modelSize, modelMtimeMs: shard.modelMtimeMs, truncated: !!shard.truncated, skipped: shard.skipped || null })
+  b.shardCache.set(name, entry)
+  b.metaCache.set(name, { ...entry.meta, modelSize: shard.modelSize, modelMtimeMs: shard.modelMtimeMs, truncated: !!shard.truncated, skipped: shard.skipped || null })
   return entry
 }
 
 // 轻量元数据（统计/增量判定用）：解析一次后缓存，不保留 chunks 解码向量
-function shardMeta(name) {
-  if (metaCache.has(name)) return metaCache.get(name)
-  const shard = lib.readShard(path.join(indexDir(), name))
-  if (!shard) { clearCaches(name); published.delete(name); return null }
+function shardMeta(kbId, name) {
+  const b = bucketOf(kbId)
+  if (b.metaCache.has(name)) return b.metaCache.get(name)
+  const shard = lib.readShard(path.join(indexDir(kbId), name))
+  if (!shard) { clearCaches(kbId, name); b.published.delete(name); return null }
   const meta = {
     path: shard.path, dir: shard.dir, title: shard.title, dim: shard.dim,
     size: shard.size, mtimeMs: shard.mtimeMs,
@@ -561,7 +677,7 @@ function shardMeta(name) {
     truncated: !!shard.truncated, skipped: shard.skipped || null,
     chunkCount: Array.isArray(shard.chunks) ? shard.chunks.length : 0,
   }
-  metaCache.set(name, meta)
+  b.metaCache.set(name, meta)
   return meta
 }
 
@@ -575,18 +691,20 @@ function pushProgress(force = false) {
 }
 
 // 分片增量判定：现分片指纹 vs 当前文件 stat + 模型指纹 + dim（复用 lib.shouldReindex 的规则）
-function shardStale(meta, stat, cfg) {
+// g = 全局配置（modelSize/modelMtimeMs/dim 为全局模型字段）
+function shardStale(meta, stat, g) {
   if (!meta) return true
   return lib.shouldReindex(
     { version: 1, size: meta.size, mtimeMs: meta.mtimeMs, modelSize: meta.modelSize, modelMtimeMs: meta.modelMtimeMs, dim: meta.dim, skipped: meta.skipped },
     { size: stat.size, mtimeMs: stat.mtimeMs },
-    { size: cfg.modelSize, mtimeMs: cfg.modelMtimeMs, dim: cfg.dim }
+    { size: g.modelSize, mtimeMs: g.modelMtimeMs, dim: g.dim }
   )
 }
 
 // 单文件索引：读取 → 归一 → 分块 → 嵌入 → 写 staging 分片。返回 staging 文件名（或 null）
-async function indexFile(token, file, cfg, baseUrl) {
-  const isGemma = /embeddinggemma/i.test(path.basename(cfg.modelPath || ''))
+// kb 提供分块粒度；g 提供模型指纹
+async function indexFile(token, file, kb, g, baseUrl) {
+  const isGemma = /embeddinggemma/i.test(path.basename(g.modelPath || ''))
   const name = lib.shardName(file.path)
   let raw = null
   try { raw = fs.readFileSync(file.path) } catch {
@@ -596,24 +714,24 @@ async function indexFile(token, file, cfg, baseUrl) {
   const norm = lib.normalizeText(raw)
   let shard
   if (!norm.text) {
-    shard = { version: lib.SHARD_VERSION, path: file.path, dir: file.dir, size: file.size, mtimeMs: file.mtimeMs, title: path.basename(file.path, path.extname(file.path)), dim: null, modelPath: cfg.modelPath, modelSize: cfg.modelSize, modelMtimeMs: cfg.modelMtimeMs, truncated: false, skipped: norm.reason, chunks: [] }
+    shard = { version: lib.SHARD_VERSION, path: file.path, dir: file.dir, size: file.size, mtimeMs: file.mtimeMs, title: path.basename(file.path, path.extname(file.path)), dim: null, modelPath: g.modelPath, modelSize: g.modelSize, modelMtimeMs: g.modelMtimeMs, truncated: false, skipped: norm.reason, chunks: [] }
   } else {
-    const chunks = lib.chunkMarkdown(norm.text, { chunkChars: cfg.chunkChars, maxChunks: lib.DEFAULT_MAX_CHUNKS })
+    const chunks = lib.chunkMarkdown(norm.text, { chunkChars: kb.chunkChars, maxChunks: lib.DEFAULT_MAX_CHUNKS })
     const truncated = chunks.length >= lib.DEFAULT_MAX_CHUNKS
     const title = path.basename(file.path, path.extname(file.path))
     const docs = chunks.map((c) => lib.buildDocPrompt(title && c.heading ? `${title} ${c.heading}` : (title || c.heading), c.text, isGemma))
     const vecs = await embedTexts(baseUrl, docs)
     shard = {
       version: lib.SHARD_VERSION, path: file.path, dir: file.dir, size: file.size, mtimeMs: file.mtimeMs,
-      title, dim: cfg.dim, modelPath: cfg.modelPath, modelSize: cfg.modelSize, modelMtimeMs: cfg.modelMtimeMs,
+      title, dim: g.dim, modelPath: g.modelPath, modelSize: g.modelSize, modelMtimeMs: g.modelMtimeMs,
       truncated, skipped: null,
       chunks: chunks.map((c, i) => ({ heading: c.heading, text: c.text, offset: c.offset, vec: lib.encodeVec(vecs[i]) })),
     }
   }
   const staging = name.replace(/\.json$/, '.staging.json')
   try {
-    fs.mkdirSync(indexDir(), { recursive: true })
-    lib.writeShardAtomic(path.join(indexDir(), staging), shard)
+    fs.mkdirSync(indexDir(kb.id), { recursive: true })
+    lib.writeShardAtomic(path.join(indexDir(kb.id), staging), shard)
   } catch (e) {
     log('ERROR', `写分片失败 ${staging}: ${e.message}`)
     return null
@@ -622,98 +740,117 @@ async function indexFile(token, file, cfg, baseUrl) {
   return staging
 }
 
-// 重建索引：staging 写入 → 完成时统一改名换 published → 清理多余分片
+// 重建索引：opts.kbId 缺省 = 全部库；单库目录内 staging → 改名换 published → 清理多余分片
 async function reindex(opts = {}) {
   const runId = ++runToken
-  loadPublished()
   const cfg = readKbJson()
   const ms = modelStat()
-  if (ms.missing) {
-    indexProgress = { runId, phase: 'error', dir: opts.dir || null, file: null, done: 0, total: 0, chunks: 0, error: ms.reason }
+  const failProgress = (msg) => {
+    indexProgress = { runId, phase: 'error', kbId: opts.kbId || null, kbName: null, dir: null, file: null, done: 0, total: 0, chunks: 0, error: msg }
     pushProgress(true)
-    return { started: false, error: ms.reason }
   }
-  // 清掉历史遗留 staging（含被取代的上一轮在途产物——runToken 已作废其回调）
-  try {
-    for (const n of fs.readdirSync(indexDir())) {
-      if (n.endsWith('.staging.json')) { try { fs.unlinkSync(path.join(indexDir(), n)) } catch { /* 忽略 */ } }
-    }
-  } catch { /* 忽略 */ }
+  if (ms.missing) { failProgress(ms.reason); return { started: false, error: ms.reason } }
+  const targets = opts.kbId ? cfg.kbs.filter((k) => k.id === opts.kbId) : cfg.kbs
+  if (!targets.length) { failProgress('未找到该知识库'); return { started: false, error: '未找到该知识库' } }
 
   const r = await ensureRunning(0)
-  if (!r.ok) {
-    indexProgress = { runId, phase: 'error', dir: opts.dir || null, file: null, done: 0, total: 0, chunks: 0, error: r.error }
-    pushProgress(true)
-    return { started: false, error: r.error }
-  }
+  if (!r.ok) { failProgress(r.error); return { started: false, error: r.error } }
 
   indexing = true
-  indexProgress = { runId, phase: 'scanning', dir: opts.dir || null, file: null, done: 0, total: 0, chunks: 0, error: null }
-  pushProgress(true)
-  log('INFO', `开始${opts.force ? '强制' : '增量'}索引${opts.dir ? `（${opts.dir}）` : ''}`)
+  indexProgress = { ...indexProgress, chunks: 0 }   // 本轮新增段数从零计
+  log('INFO', `开始${opts.force ? '强制' : '增量'}索引${opts.kbId ? `（${targets[0].name}）` : `（${targets.length} 个知识库）`}`)
 
+  let doneAll = 0
+  let totalAll = 0
   try {
-    const dirs = opts.dir ? [opts.dir] : cfg.sources.map((s) => s.dir)
-    const files = lib.scanSources(dirs)
-    // 作用域重建：其余来源的文件也要保进 keep（不被 deleteShardsNotIn 误删）
-    const others = opts.dir ? cfg.sources.map((s) => s.dir).filter((d) => d !== opts.dir) : []
-    const otherFiles = others.length ? lib.scanSources(others) : []
-
-    indexProgress = { ...indexProgress, phase: 'embedding', total: files.length, done: 0 }
-    pushProgress(true)
-
-    const stagingNames = new Set()
-    const keepNames = new Set()
-    for (const f of otherFiles) keepNames.add(lib.shardName(f.path))
-
-    let done = 0
-    for (const file of files) {
-      if (runToken !== runId) { indexing = false; indexProgress = { ...indexProgress, phase: 'cancelled', file: null, error: null }; pushProgress(true); log('INFO', '索引已取消/被新任务取代'); return { started: true, cancelled: true } }
-      const name = lib.shardName(file.path)
-      const prevMeta = published.has(name) ? shardMeta(name) : null
-      if (!opts.force && !shardStale(prevMeta, file, cfg)) {
-        keepNames.add(name)
-        done++
-        indexProgress = { ...indexProgress, done }
-        pushProgress()
-        continue
+    for (const kb of targets) {
+      if (runToken !== runId) {
+        indexing = false
+        indexProgress = { runId, phase: 'cancelled', kbId: null, kbName: null, dir: null, file: null, done: 0, total: 0, chunks: 0, error: null }
+        pushProgress(true)
+        log('INFO', '索引已取消/被新任务取代')
+        return { started: true, cancelled: true }
       }
-      if (file.oversized) {
-        // 超大文件：直接写 skipped 分片（不读入内存）
-        const shard = { version: lib.SHARD_VERSION, path: file.path, dir: file.dir, size: file.size, mtimeMs: file.mtimeMs, title: path.basename(file.path, path.extname(file.path)), dim: null, modelPath: cfg.modelPath, modelSize: cfg.modelSize, modelMtimeMs: cfg.modelMtimeMs, truncated: false, skipped: 'too-large', chunks: [] }
-        const staging = name.replace(/\.json$/, '.staging.json')
-        try { lib.writeShardAtomic(path.join(indexDir(), staging), shard); stagingNames.add(staging); keepNames.add(name) } catch { /* 忽略 */ }
+      const b = loadPublished(kb.id)
+      const dir = indexDir(kb.id)
+      try { fs.mkdirSync(dir, { recursive: true }) } catch { /* 忽略 */ }
+      // 清本库历史 staging（含被取代的上一轮在途产物——runToken 已作废其回调）
+      try {
+        for (const n of fs.readdirSync(dir)) {
+          if (n.endsWith('.staging.json')) { try { fs.unlinkSync(path.join(dir, n)) } catch { /* 忽略 */ } }
+        }
+      } catch { /* 忽略 */ }
+
+      const dirs = kb.sources.map((s) => s.dir)
+      const files = dirs.length ? lib.scanSources(dirs) : []
+      indexProgress = { runId, phase: 'embedding', kbId: kb.id, kbName: kb.name, dir: null, file: null, done: 0, total: files.length, chunks: indexProgress.chunks, error: null }
+      pushProgress(true)
+
+      const stagingNames = new Set()
+      const keepNames = new Set()
+      let done = 0
+      for (const file of files) {
+        if (runToken !== runId) {
+          indexing = false
+          indexProgress = { runId, phase: 'cancelled', kbId: null, kbName: null, dir: null, file: null, done: 0, total: 0, chunks: 0, error: null }
+          pushProgress(true)
+          return { started: true, cancelled: true }
+        }
+        const name = lib.shardName(file.path)
+        const prevMeta = b.published.has(name) ? shardMeta(kb.id, name) : null
+        if (!opts.force && !shardStale(prevMeta, file, cfg)) {
+          keepNames.add(name)
+          done++
+          doneAll++
+          indexProgress = { ...indexProgress, done }
+          pushProgress()
+          continue
+        }
+        if (file.oversized) {
+          // 超大文件：直接写 skipped 分片（不读入内存）
+          const shard = { version: lib.SHARD_VERSION, path: file.path, dir: file.dir, size: file.size, mtimeMs: file.mtimeMs, title: path.basename(file.path, path.extname(file.path)), dim: null, modelPath: cfg.modelPath, modelSize: cfg.modelSize, modelMtimeMs: cfg.modelMtimeMs, truncated: false, skipped: 'too-large', chunks: [] }
+          const staging = name.replace(/\.json$/, '.staging.json')
+          try { lib.writeShardAtomic(path.join(dir, staging), shard); stagingNames.add(staging); keepNames.add(name) } catch { /* 忽略 */ }
+          done++
+          doneAll++
+          indexProgress = { ...indexProgress, done }
+          pushProgress(true)
+          continue
+        }
+        indexProgress = { ...indexProgress, file: file.path }
+        pushProgress(true)
+        const staging = await indexFile(runToken, file, kb, cfg, r.baseUrl)
+        if (staging) { stagingNames.add(staging); keepNames.add(name) }
         done++
+        doneAll++
         indexProgress = { ...indexProgress, done }
         pushProgress(true)
-        continue
       }
-      indexProgress = { ...indexProgress, file: file.path }
-      pushProgress(true)
-      const staging = await indexFile(runToken, file, cfg, r.baseUrl)
-      if (staging) { stagingNames.add(staging); keepNames.add(name) }
-      done++
-      indexProgress = { ...indexProgress, done }
-      pushProgress(true)
-    }
 
-    if (runToken !== runId) { indexing = false; indexProgress = { ...indexProgress, phase: 'cancelled', file: null, error: null }; pushProgress(true); return { started: true, cancelled: true } }
+      if (runToken !== runId) {
+        indexing = false
+        indexProgress = { runId, phase: 'cancelled', kbId: null, kbName: null, dir: null, file: null, done: 0, total: 0, chunks: 0, error: null }
+        pushProgress(true)
+        return { started: true, cancelled: true }
+      }
 
-    // —— 发布快照：staging → 正式名原子改名，换 published，清理不再收录的分片 ——
-    for (const staging of stagingNames) {
-      const finalName = staging.replace(/\.staging\.json$/, '.json')
-      try { fs.renameSync(path.join(indexDir(), staging), path.join(indexDir(), finalName)) } catch { /* 忽略 */ }
+      // —— 发布本库快照：staging → 正式名原子改名，换 published，清理不再收录的分片 ——
+      for (const staging of stagingNames) {
+        const finalName = staging.replace(/\.staging\.json$/, '.json')
+        try { fs.renameSync(path.join(dir, staging), path.join(dir, finalName)) } catch { /* 忽略 */ }
+      }
+      b.published = keepNames
+      for (const name of Array.from(b.shardCache.keys())) if (!keepNames.has(name)) b.shardCache.delete(name)
+      for (const name of Array.from(b.metaCache.keys())) if (!keepNames.has(name)) b.metaCache.delete(name)
+      lib.deleteShardsNotIn(dir, keepNames)
+      totalAll += files.length
     }
-    published = keepNames
-    for (const name of Array.from(shardCache.keys())) if (!keepNames.has(name)) shardCache.delete(name)
-    for (const name of Array.from(metaCache.keys())) if (!keepNames.has(name)) metaCache.delete(name)
-    lib.deleteShardsNotIn(indexDir(), keepNames)
 
     indexing = false
-    indexProgress = { ...indexProgress, phase: 'done', file: null, error: null }
+    indexProgress = { runId, phase: 'done', kbId: null, kbName: null, dir: null, file: null, done: doneAll, total: totalAll, chunks: indexProgress.chunks, error: null }
     pushProgress(true)
-    log('INFO', `索引完成：${done}/${files.length} 个文件，${indexProgress.chunks} 段`)
-    return { started: true, done, total: files.length, chunks: indexProgress.chunks }
+    log('INFO', `索引完成：${doneAll}/${totalAll} 个文件，${indexProgress.chunks} 段`)
+    return { started: true, done: doneAll, total: totalAll, chunks: indexProgress.chunks }
   } catch (e) {
     indexing = false
     indexProgress = { ...indexProgress, phase: 'error', error: e.message, file: null }
@@ -729,47 +866,65 @@ function cancelIndex() {
   return true
 }
 
-// ============ 查询 ============
+// ============ 查询（多库合并） ============
+// 每库按各自 topK/minScore 截取（防大库淹没小库）→ lib.mergeKbHits 全局排序取前 KB_MERGE_TOPK
 async function query(text, topK) {
-  loadPublished()
   const cfg = readKbJson()
   if (!text || !text.trim()) return { hits: [], tookMs: 0 }
-  if (!published.size) return { hits: [], tookMs: 0 }
-  const k = clamp(topK ?? cfg.topK, 1, 12, cfg.topK)
+  const active = cfg.kbs.filter((k) => k.enabled)
+  let totalShards = 0
+  for (const k of active) totalShards += loadPublished(k.id).published.size
+  if (!totalShards) return { hits: [], tookMs: 0 }   // 空索引零开销短路（不触服务）
   const t0 = Date.now()
   const r = await ensureRunning(0)
   if (!r.ok) { const e = new Error(r.error); e.code = r.code; throw e }
   const isGemma = /embeddinggemma/i.test(path.basename(cfg.modelPath || ''))
   const qVec = (await embedTexts(r.baseUrl, [lib.buildQueryPrompt(text.slice(0, 1200), isGemma)]))[0]
-  const entries = []
-  for (const name of published) {
-    const entry = loadShard(name)
-    if (!entry || !entry.chunks.length) continue
-    for (const c of entry.chunks) {
-      entries.push({ vec: c.vec, path: entry.meta.path, title: entry.meta.title, dir: entry.meta.dir, heading: c.heading, text: c.text })
+  const perKb = []
+  for (const k of active) {
+    const b = loadPublished(k.id)
+    if (!b.published.size) continue
+    const entries = []
+    for (const name of b.published) {
+      const entry = loadShard(k.id, name)
+      if (!entry || !entry.chunks.length) continue
+      for (const c of entry.chunks) {
+        entries.push({ vec: c.vec, path: entry.meta.path, title: entry.meta.title, dir: entry.meta.dir, heading: c.heading, text: c.text })
+      }
     }
+    if (!entries.length) continue
+    perKb.push({ hits: lib.cosineTopK(qVec, entries, clamp(k.topK, 1, 12, 5), k.minScore) })
   }
-  const hits = lib.cosineTopK(qVec, entries, k, cfg.minScore)
+  const hits = lib.mergeKbHits(perKb, KB_MERGE_TOPK)
   maybeAutoReindex()
   return { hits, tookMs: Date.now() - t0 }
 }
 
-// 后台增量：文件变动后下次查询顺手触发（不阻塞本次结果；30s 冷却防空转）
+// 后台增量：文件变动后下次查询顺手触发（不阻塞本次结果；30s 冷却防空转）。
+// 扫全部库的来源（不管 enabled——停用只是不参与检索，索引保持新鲜）
 function maybeAutoReindex() {
   // 异步触发：绝不阻塞当前查询响应（首次扫描需 stat 全部文件）
   setTimeout(() => {
     try {
       if (indexing) return
       const cfg = readKbJson()
-      if (!published.size || !cfg.sources.length) return
       if (Date.now() - lastAutoScan < AUTO_REINDEX_COOLDOWN_MS) return
+      // 只在已有分片的库存在时做增量（全新未索引的库由 addSource 主动触发）
+      let anyShards = false
+      for (const k of cfg.kbs) if (loadPublished(k.id).published.size) { anyShards = true; break }
+      if (!anyShards) return
       lastAutoScan = Date.now()
-      const files = lib.scanSources(cfg.sources.map((s) => s.dir))
       let stale = 0
-      for (const f of files) {
-        const name = lib.shardName(f.path)
-        const meta = published.has(name) ? shardMeta(name) : null
-        if (shardStale(meta, f, cfg)) stale++
+      for (const k of cfg.kbs) {
+        const dirs = k.sources.map((s) => s.dir)
+        if (!dirs.length) continue
+        const files = lib.scanSources(dirs)
+        const b = loadPublished(k.id)
+        for (const f of files) {
+          const name = lib.shardName(f.path)
+          const meta = b.published.has(name) ? shardMeta(k.id, name) : null
+          if (shardStale(meta, f, cfg)) stale++
+        }
       }
       if (stale > 0) {
         log('INFO', `检测到 ${stale} 个文件有变动，后台增量索引`)
@@ -781,66 +936,124 @@ function maybeAutoReindex() {
 
 // ============ 配置查询 ============
 function getConfig() {
-  loadPublished()
   const cfg = readKbJson()
   const ms = modelStat()
-  const sources = []
+  const model = { ok: !ms.missing, missing: ms.missing, error: ms.missing ? ms.reason : null, path: cfg.modelPath, size: ms.size || null, dim: cfg.dim }
+  const kbs = []
   const totals = { files: 0, chunks: 0 }
   let staleTotal = 0
-  try {
-    const files = lib.scanSources(cfg.sources.map((s) => s.dir))
-    for (const src of cfg.sources) {
-      const list = files.filter((f) => f.dir === src.dir)
-      let chunks = 0, indexed = 0, stale = 0, bytes = 0
-      // 来源目录当前不可访问 = 失联（保留分片与记录，UI 徽章提示；不自动移除）
-      const missing = list.length === 0 && !fs.existsSync(src.dir)
-      for (const f of list) {
-        const name = lib.shardName(f.path)
-        const meta = published.has(name) ? shardMeta(name) : null
-        bytes += f.size
-        if (shardStale(meta, f, cfg)) { stale++; staleTotal++ }
-        else { indexed++; chunks += meta.chunkCount || 0; totals.chunks += meta.chunkCount || 0 }
+  for (const kb of cfg.kbs) {
+    const b = loadPublished(kb.id)
+    const sources = []
+    const stats = { files: 0, chunks: 0, stale: 0 }
+    try {
+      const dirs = kb.sources.map((s) => s.dir)
+      const files = dirs.length ? lib.scanSources(dirs) : []
+      for (const src of kb.sources) {
+        const list = files.filter((f) => f.dir === src.dir)
+        let chunks = 0, indexed = 0, stale = 0, bytes = 0
+        // 来源目录当前不可访问 = 失联（保留分片与记录，UI 徽章提示；不自动移除）
+        const missing = list.length === 0 && !fs.existsSync(src.dir)
+        for (const f of list) {
+          const name = lib.shardName(f.path)
+          const meta = b.published.has(name) ? shardMeta(kb.id, name) : null
+          bytes += f.size
+          if (shardStale(meta, f, cfg)) { stale++; stats.stale++; staleTotal++ }
+          else { indexed++; chunks += meta.chunkCount || 0; stats.chunks += meta.chunkCount || 0; totals.chunks += meta.chunkCount || 0 }
+        }
+        stats.files += list.length
+        totals.files += list.length
+        sources.push({ dir: src.dir, addedAt: src.addedAt, fileCount: list.length, chunkCount: chunks, indexedFiles: indexed, staleCount: stale, missing, bytes })
       }
-      totals.files += list.length
-      sources.push({ dir: src.dir, addedAt: src.addedAt, fileCount: list.length, chunkCount: chunks, indexedFiles: indexed, staleCount: stale, missing, bytes })
-    }
-  } catch { /* 扫描失败按空处理 */ }
+    } catch { /* 扫描失败按空处理 */ }
+    kbs.push({
+      id: kb.id, name: kb.name, enabled: kb.enabled !== false,
+      topK: kb.topK, chunkChars: kb.chunkChars, minScore: kb.minScore, createdAt: kb.createdAt,
+      sources, stats,
+    })
+  }
   return {
-    config: {
-      modelPath: cfg.modelPath, enabled: cfg.enabled, topK: cfg.topK, chunkChars: cfg.chunkChars,
-      minScore: cfg.minScore, injectCharBudget: cfg.injectCharBudget,
-      sources: cfg.sources, dim: cfg.dim,
-    },
-    modelOk: !ms.missing,
-    modelMissing: ms.missing,
-    modelError: ms.missing ? ms.reason : null,
-    modelSize: ms.size || null,
+    model,
     binaries: { vulkan: fs.existsSync(exePathOf('vulkan')), cpu: fs.existsSync(exePathOf('cpu')) },
+    autoInject: cfg.autoInject !== false,
+    injectCharBudget: cfg.injectCharBudget,
     indexDir: indexDir(),
     indexing,
     indexProgress,
     status: snapshot(),
-    sources,
+    kbs,
     totals,
     staleTotal,
   }
 }
 
-// ============ 配置与来源操作 ============
+// ============ 全局配置 ============
 function setConfig(patch) {
   const clean = {}
-  if (patch && typeof patch.enabled === 'boolean') clean.enabled = patch.enabled
-  if (patch && patch.topK != null) clean.topK = clamp(patch.topK, 1, 12, DEFAULT_KB.topK)
-  if (patch && patch.chunkChars != null) clean.chunkChars = clamp(patch.chunkChars, 300, 2000, DEFAULT_KB.chunkChars)
-  if (patch && patch.minScore != null) clean.minScore = Math.min(1, Math.max(0, Number(patch.minScore) || 0))
-  if (patch && patch.injectCharBudget != null) clean.injectCharBudget = clamp(patch.injectCharBudget, 1000, 12000, DEFAULT_KB.injectCharBudget)
-  const next = writeKbJson(clean)
-  if (clean.chunkChars != null) {
-    // 分块粒度变了：旧向量分段不再对齐，全部重建
-    wipeIndex()
-    log('INFO', `分块粒度调整为 ${next.chunkChars}，已清空旧索引`)
-  }
+  if (patch && typeof patch.autoInject === 'boolean') clean.autoInject = patch.autoInject
+  if (patch && patch.injectCharBudget != null) clean.injectCharBudget = clamp(patch.injectCharBudget, 1000, 12000, DEFAULT_GLOBAL.injectCharBudget)
+  writeKbJson(clean)
   return getConfig()
+}
+
+// ============ 知识库 CRUD ============
+function createKb(name) {
+  const cfg = readKbJson()
+  const n = String(name == null ? '' : name).trim()
+  const kb = {
+    ...DEFAULT_KB_ITEM,
+    id: newKbId(),
+    name: n || `知识库 ${cfg.kbs.length + 1}`,
+    createdAt: Date.now(),
+  }
+  writeKbJson({ kbs: [...cfg.kbs, kb] })
+  log('INFO', `创建知识库「${kb.name}」(${kb.id})`)
+  return { ok: true, config: getConfig() }
+}
+
+function renameKb(kbId, name) {
+  const cfg = readKbJson()
+  const kb = cfg.kbs.find((k) => k.id === kbId)
+  if (!kb) return { ok: false, error: '未找到该知识库' }
+  const n = String(name == null ? '' : name).trim()
+  if (!n) return { ok: false, error: '名称不能为空' }
+  writeKbJson({ kbs: cfg.kbs.map((k) => (k.id === kbId ? { ...k, name: n } : k)) })
+  return { ok: true, config: getConfig() }
+}
+
+function deleteKb(kbId) {
+  if (indexing) return { ok: false, error: '索引进行中，请稍后再试' }
+  const cfg = readKbJson()
+  const kb = cfg.kbs.find((k) => k.id === kbId)
+  if (!kb) return { ok: false, error: '未找到该知识库' }
+  writeKbJson({ kbs: cfg.kbs.filter((k) => k.id !== kbId) })
+  kbIndex.delete(kbId)
+  try { fs.rmSync(indexDir(kbId), { recursive: true, force: true }) } catch { /* 忽略 */ }
+  log('INFO', `删除知识库「${kb.name}」(${kbId})，索引已清除`)
+  return { ok: true, config: getConfig() }
+}
+
+function setKbConfig(kbId, patch) {
+  const cfg = readKbJson()
+  const kb = cfg.kbs.find((k) => k.id === kbId)
+  if (!kb) return { ok: false, error: '未找到该知识库' }
+  const next = { ...kb }
+  if (patch && typeof patch.enabled === 'boolean') next.enabled = patch.enabled
+  if (patch && patch.topK != null) next.topK = clamp(patch.topK, 1, 12, DEFAULT_KB_ITEM.topK)
+  if (patch && patch.minScore != null) next.minScore = Math.min(1, Math.max(0, Number(patch.minScore) || 0))
+  let chunkChanged = false
+  if (patch && patch.chunkChars != null) {
+    const v = clamp(patch.chunkChars, 300, 2000, DEFAULT_KB_ITEM.chunkChars)
+    chunkChanged = v !== kb.chunkChars
+    next.chunkChars = v
+  }
+  writeKbJson({ kbs: cfg.kbs.map((k) => (k.id === kbId ? next : k)) })
+  if (chunkChanged) {
+    // 分块粒度变了：该库旧向量分段不再对齐，仅清该库
+    wipeIndex(kbId)
+    log('INFO', `「${next.name}」分块粒度调整为 ${next.chunkChars}，已清空该库索引`)
+  }
+  return { ok: true, config: getConfig() }
 }
 
 // gguf 文件选择（原生对话框）：只校验不持久化，落定走 set-model
@@ -868,8 +1081,9 @@ async function pickModel() {
   }
 }
 
-// 落定模型：持久化指纹 + 清空旧索引（换模型向量必失效）；运行中则自动重启
+// 落定模型：持久化指纹 + 清空全部库旧索引（换模型向量必失效）；运行中则自动重启
 function setModel(absPath) {
+  if (indexing) return { ok: false, error: '索引进行中，请稍后再试' }
   const p = absPath ? path.resolve(String(absPath)) : null
   if (!p || !fs.existsSync(p) || !fs.statSync(p).isFile()) return { ok: false, error: '模型文件不存在' }
   try {
@@ -884,8 +1098,8 @@ function setModel(absPath) {
   const changed = cfg.modelPath !== p
   writeKbJson({ modelPath: p, modelSize: st.size, modelMtimeMs: st.mtimeMs })
   if (changed) {
-    wipeIndex()
-    log('INFO', `检索模型已切换为 ${path.basename(p)}，旧索引已清空`)
+    wipeAllIndexes()
+    log('INFO', `检索模型已切换为 ${path.basename(p)}，全部知识库旧索引已清空`)
     if (phase === 'running' || phase === 'starting') {
       stop()
       const t = setInterval(() => {
@@ -898,51 +1112,64 @@ function setModel(absPath) {
   return { ok: true, config: getConfig() }
 }
 
-// 目录来源：拒绝重复与嵌套（父目录已注册或包含已注册目录都会产生归属歧义）
-async function addSource() {
+// 目录来源（单库作用域）：库内拒绝重复与嵌套；跨库允许收录同一目录（分片按库隔离）
+async function addSource(kbId) {
   const dialog = electron?.dialog
   if (!dialog || typeof dialog.showOpenDialog !== 'function') throw new Error('当前环境不支持目录选择')
-  const r = await dialog.showOpenDialog({ title: '添加知识库文件夹', properties: ['openDirectory'] })
+  const cfg = readKbJson()
+  const kb = cfg.kbs.find((k) => k.id === kbId)
+  if (!kb) return { canceled: false, error: '未找到该知识库' }
+  const r = await dialog.showOpenDialog({ title: `添加文件夹到「${kb.name}」`, properties: ['openDirectory'] })
   if (r.canceled || !r.filePaths || !r.filePaths.length) return { canceled: true }
   const dir = path.resolve(r.filePaths[0])
-  const cfg = readKbJson()
-  const caseFold = (p) => (process.platform === 'win32' ? p.toLowerCase() : p)
-  const d = caseFold(dir)
-  for (const s of cfg.sources) {
-    const e = caseFold(path.resolve(s.dir))
-    if (e === d) return { canceled: false, error: '该文件夹已在知识库中' }
-    if (d.startsWith(e + path.sep) || e.startsWith(d + path.sep)) {
-      return { canceled: false, error: '与已有文件夹嵌套重叠，请选择其他目录' }
-    }
-  }
-  writeKbJson({ sources: [...cfg.sources, { dir, addedAt: Date.now() }] })
-  log('INFO', `添加知识库来源: ${dir}`)
+  const err = validateSource(kb, dir)
+  if (err) return { canceled: false, error: err }
+  writeKbJson({ kbs: cfg.kbs.map((k) => (k.id === kbId ? { ...k, sources: [...k.sources, { dir, addedAt: Date.now() }] } : k)) })
+  log('INFO', `「${kb.name}」添加来源: ${dir}`)
   return { canceled: false, dir, config: getConfig() }
 }
 
-function removeSource(dir) {
+// 来源合法性（库内重复/嵌套会产生归属歧义）；返回错误文案或 null
+function validateSource(kb, dir) {
+  const caseFold = (p) => (process.platform === 'win32' ? p.toLowerCase() : p)
+  const d = caseFold(dir)
+  for (const s of kb.sources) {
+    const e = caseFold(path.resolve(s.dir))
+    if (e === d) return '该文件夹已在此知识库中'
+    if (d.startsWith(e + path.sep) || e.startsWith(d + path.sep)) {
+      return '与已有文件夹嵌套重叠，请选择其他目录'
+    }
+  }
+  return null
+}
+
+function removeSource(kbId, dir) {
+  if (indexing) return { ok: false, error: '索引进行中，请稍后再试' }
   const target = dir ? path.resolve(String(dir)) : null
   if (!target) return { ok: false, error: '缺少目录参数' }
   const cfg = readKbJson()
+  const kb = cfg.kbs.find((k) => k.id === kbId)
+  if (!kb) return { ok: false, error: '未找到该知识库' }
   const caseFold = (p) => (process.platform === 'win32' ? p.toLowerCase() : p)
-  const rest = cfg.sources.filter((s) => caseFold(path.resolve(s.dir)) !== caseFold(target))
-  if (rest.length === cfg.sources.length) return { ok: false, error: '未找到该来源' }
-  writeKbJson({ sources: rest })
-  // 收敛：把剩余来源之外的分片清掉
+  const rest = kb.sources.filter((s) => caseFold(path.resolve(s.dir)) !== caseFold(target))
+  if (rest.length === kb.sources.length) return { ok: false, error: '未找到该来源' }
+  writeKbJson({ kbs: cfg.kbs.map((k) => (k.id === kbId ? { ...k, sources: rest } : k)) })
+  // 收敛：把该库剩余来源之外的分片清掉
   try {
+    const b = loadPublished(kbId)
     const files = rest.length ? lib.scanSources(rest.map((s) => s.dir)) : []
     const keep = new Set(files.map((f) => lib.shardName(f.path)))
-    published = keep
-    for (const name of Array.from(shardCache.keys())) if (!keep.has(name)) shardCache.delete(name)
-    for (const name of Array.from(metaCache.keys())) if (!keep.has(name)) metaCache.delete(name)
-    lib.deleteShardsNotIn(indexDir(), keep)
+    b.published = keep
+    for (const name of Array.from(b.shardCache.keys())) if (!keep.has(name)) b.shardCache.delete(name)
+    for (const name of Array.from(b.metaCache.keys())) if (!keep.has(name)) b.metaCache.delete(name)
+    lib.deleteShardsNotIn(indexDir(kbId), keep)
   } catch { /* 忽略 */ }
-  log('INFO', `移除知识库来源: ${target}`)
+  log('INFO', `「${kb.name}」移除来源: ${target}`)
   return { ok: true, config: getConfig() }
 }
 
-function openIndexDir() {
-  const dir = indexDir()
+function openIndexDir(kbId) {
+  const dir = kbId ? indexDir(kbId) : indexDir()
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
   const shell = electron?.shell
   if (!shell || typeof shell.openPath !== 'function') throw new Error('当前环境不支持打开目录')
@@ -964,22 +1191,33 @@ function initKnowledgeBase(loggerFn) {
     })
     handle('kb:get-config', () => getConfig())
     handle('kb:set-config', (_e, patch) => setConfig(patch))
+    handle('kb:create', (_e, name) => createKb(name))
+    handle('kb:rename', (_e, kbId, name) => renameKb(kbId, name))
+    handle('kb:delete', (_e, kbId) => deleteKb(kbId))
+    handle('kb:set-kb', (_e, kbId, patch) => setKbConfig(kbId, patch))
     handle('kb:pick-model', () => pickModel())
     handle('kb:set-model', (_e, p) => setModel(p))
-    handle('kb:add-source', () => addSource())
-    handle('kb:remove-source', (_e, dir) => removeSource(dir))
+    handle('kb:add-source', (_e, kbId) => addSource(kbId))
+    handle('kb:remove-source', (_e, kbId, dir) => removeSource(kbId, dir))
     handle('kb:reindex', (_e, opts) => { reindex(opts || {}).catch(() => {}); return { started: true } })
     handle('kb:cancel-index', () => ({ cancelled: cancelIndex() }))
     handle('kb:query', (_e, text, topK) => query(text, topK))
-    handle('kb:open-index-dir', () => openIndexDir())
+    handle('kb:open-index-dir', (_e, kbId) => openIndexDir(kbId))
   }
   return {
     start, stop, kill, ensureRunning, snapshot, getConfig,
-    reindex, cancelIndex, query, setModel, setConfig, addSourcePath: (dir) => {
-      // harness 直驱：绕过原生对话框
+    reindex, cancelIndex, query, setModel, setConfig,
+    createKb, renameKb, deleteKb, setKbConfig,
+    addSourcePath: (kbId, dir) => {
+      // harness 直驱：绕过原生对话框（与 addSource 同一套校验）
       const cfg = readKbJson()
-      writeKbJson({ sources: [...cfg.sources, { dir: path.resolve(dir), addedAt: Date.now() }] })
-      return getConfig()
+      const kb = cfg.kbs.find((k) => k.id === kbId)
+      if (!kb) return { ok: false, error: '未找到该知识库', config: getConfig() }
+      const d = path.resolve(dir)
+      const err = validateSource(kb, d)
+      if (err) return { ok: false, error: err, config: getConfig() }
+      writeKbJson({ kbs: cfg.kbs.map((k) => (k.id === kbId ? { ...k, sources: [...k.sources, { dir: d, addedAt: Date.now() }] } : k)) })
+      return { ok: true, config: getConfig() }
     },
     removeSource,
   }

@@ -42,6 +42,8 @@
     </div>
 
     <DevPanel v-model:visible="devVisible" />
+    <!-- 知识库大栏目（桌面端本地 RAG；Web/Tauri 无 kb* API 不挂载） -->
+    <KnowledgeManager v-if="hasKb" />
     <CloudFiles :visible="cloudVisible" @close="cloudVisible = false" />
     <BackupFiles :visible="backupVisible" @close="backupVisible = false" />
     <AdminUsers :visible="adminVisible" @close="adminVisible = false" />
@@ -79,6 +81,7 @@ import Editor from './components/Editor.vue'
 import Statusbar from './components/Statusbar.vue'
 import SearchPanel from './components/SearchPanel.vue'
 import DevPanel from './components/DevPanel.vue'
+import KnowledgeManager from './components/KnowledgeManager.vue'
 import CloudFiles from './components/CloudFiles.vue'
 import BackupFiles from './components/BackupFiles.vue'
 import LoginGate from './components/LoginGate.vue'
@@ -90,11 +93,15 @@ import type { OutlineItem } from '@/utils/markdown'
 import { ElMessage } from 'element-plus'
 import { useAIStore } from '@/stores/ai'
 import { useKbStore } from '@/stores/kb'
+import { hasKnowledge } from '@/utils/knowledge'
 import { useAuthStore, authNeeded } from '@/stores/auth'
 
 const docStore = useDocumentStore()
 const aiStore = useAIStore()
 const authStore = useAuthStore()
+// 知识库大栏目（桌面端专用；Web/Tauri 无 kb* API 恒为 false）
+const hasKb = hasKnowledge()
+const kbStore = useKbStore()
 
 const editorRef = ref<InstanceType<typeof Editor>>()
 const editorWrapperRef = ref<HTMLElement>()
@@ -270,7 +277,7 @@ function bootstrapEditor() {
   docStore.init()
   aiStore.init()
   // 知识库推送绑定 + 首次对账（桌面端才有 kb* API；bind 内部自门控）
-  useKbStore().bind()
+  kbStore.bind()
 
   // Tauri 关闭前保存（仅 Tauri 环境；Electron 走下面的 window.__saveBeforeClose）
   // 此前无条件注册，在 Electron 环境调 @tauri-apps/api 的 listen 会抛
@@ -349,6 +356,9 @@ function bootstrapEditor() {
         case 'show-shortcuts':
           devVisible.value = true
           break
+        case 'kb-manage':
+          kbStore.managerOpen = true
+          break
       }
     })
 
@@ -422,6 +432,10 @@ async function handleExport(type: string) {
   }
   if (type === 'dev-mode') {
     devVisible.value = true
+    return
+  }
+  if (type === 'kb-manage') {
+    kbStore.managerOpen = true
     return
   }
   const doc = docStore.activeDocument

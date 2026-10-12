@@ -51,17 +51,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('ai-engine-download', listener)
     return () => ipcRenderer.removeListener('ai-engine-download', listener)
   },
-  // ===== 知识库（本地 RAG：主进程托管嵌入服务 + 分片向量索引）=====
+  // ===== 知识库（本地 RAG v2：多知识库，主进程托管嵌入服务 + 分库向量索引）=====
   kbConfig: () => ipcRenderer.invoke('kb:get-config'),
   kbSetConfig: (patch) => ipcRenderer.invoke('kb:set-config', patch),
+  kbCreate: (name) => ipcRenderer.invoke('kb:create', name),
+  kbRename: (kbId, name) => ipcRenderer.invoke('kb:rename', kbId, name),
+  kbDelete: (kbId) => ipcRenderer.invoke('kb:delete', kbId),
+  kbSetKb: (kbId, patch) => ipcRenderer.invoke('kb:set-kb', kbId, patch),
   kbPickModel: () => ipcRenderer.invoke('kb:pick-model'),
   kbSetModel: (modelPath) => ipcRenderer.invoke('kb:set-model', modelPath),
-  kbAddSource: () => ipcRenderer.invoke('kb:add-source'),
-  kbRemoveSource: (dir) => ipcRenderer.invoke('kb:remove-source', dir),
+  kbAddSource: (kbId) => ipcRenderer.invoke('kb:add-source', kbId),
+  kbRemoveSource: (kbId, dir) => ipcRenderer.invoke('kb:remove-source', kbId, dir),
   kbReindex: (opts) => ipcRenderer.invoke('kb:reindex', opts),
   kbCancelIndex: () => ipcRenderer.invoke('kb:cancel-index'),
   kbQuery: (text, topK) => ipcRenderer.invoke('kb:query', text, topK),
-  kbOpenIndexDir: () => ipcRenderer.invoke('kb:open-index-dir'),
+  kbOpenIndexDir: (kbId) => ipcRenderer.invoke('kb:open-index-dir', kbId),
   // 订阅推送；返回取消订阅函数
   onKbStatus: (callback) => {
     const listener = (_e, payload) => callback(payload)

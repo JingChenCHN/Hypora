@@ -3,20 +3,21 @@
 // 绝不阻塞或报错打断对话；故障后 60s 冷却，期间零 IPC 零 spawn。
 // setup 体无副作用：bind() 由 App.vue 显式调用（aiStore.init 之后），保证
 // useKbStore() 在 AI 面板从未挂载时也能被 ai.ts 懒初始化。
+// v2 多库：模型全局共用；kbs[] 各自开关/参数；managerOpen 驱动知识库管理抽屉。
 
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   hasKnowledge, kbApi,
-  type KbStatus, type KbConfigPayload, type KbProgress, type KbHit, type KbQueryResult,
+  type KbStatus, type KbConfigPayload, type KbProgress, type KbHit, type KbQueryResult, type KbItemPatch,
 } from '@/utils/knowledge'
 
 // 检索预算：服务冷启动 + 嵌入 + 检索的上限（嵌入服务 45s 自身超时在此之上）
 const RETRIEVE_BUDGET_MS = 6000
 // 检索失败后的冷却：期间直接跳过检索，不让故障知识库拖慢每一条消息
 const RETRIEVAL_COOLDOWN_MS = 60_000
-// 注入块单段与总预算（与 kb.json injectCharBudget 一致的默认）
+// 注入块单段上限（与主进程 PER_HIT_CHARS 一致的默认）
 const PER_HIT_CHARS = 1200
 
 const EMPTY_RETRIEVAL = { block: '', hits: 0, sources: [] as string[] }
@@ -25,15 +26,19 @@ export const useKbStore = defineStore('kb', () => {
   const status = ref<KbStatus | null>(null)
   const payload = ref<KbConfigPayload | null>(null)
   const progress = ref<KbProgress | null>(null)
+  // 知识库管理抽屉（大栏目）：跨组件开关——AIPanel「管理」、Toolbar 菜单、原生菜单都能打开
+  const managerOpen = ref(false)
   let bound = false
   let retrievalBlockedUntil = 0
 
-  const enabled = computed(() => payload.value?.config.enabled ?? false)
-  const modelOk = computed(() => payload.value?.modelOk ?? false)
+  const autoInject = computed(() => payload.value?.autoInject ?? false)
+  const modelOk = computed(() => payload.value?.model.ok ?? false)
   const chunkTotal = computed(() => payload.value?.totals.chunks ?? 0)
+  // 参与检索的库（启用且已有索引内容）
+  const activeKbs = computed(() => (payload.value?.kbs || []).filter((k) => k.enabled && k.stats.chunks > 0))
 
-  // 检索就绪 = 桌面端 + 模型有效 + 开关开启 + 索引非空。空索引时主进程查询零开销短路。
-  const ready = computed(() => hasKnowledge() && modelOk.value && enabled.value && chunkTotal.value > 0)
+  // 检索就绪 = 桌面端 + 模型有效 + 总开关开启 + 至少一个启用库有索引。空集合时主进程查询零开销短路。
+  const ready = computed(() => hasKnowledge() && modelOk.value && autoInject.value && activeKbs.value.length > 0)
 
   const indexing = computed(() => payload.value?.indexing || progress.value?.phase === 'scanning' || progress.value?.phase === 'embedding')
   const dot = computed<'ok' | 'err' | 'off'>(() => {
@@ -42,6 +47,7 @@ export const useKbStore = defineStore('kb', () => {
     if (status.value?.phase === 'failed') return 'err'
     return 'off'
   })
+  // 聚合状态行（kb-strip 一行说清全局）：优先级 索引中 > 模型 > 总开关 > 库内容
   const statusText = computed(() => {
     const p = payload.value
     if (!hasKnowledge()) return ''
@@ -50,10 +56,11 @@ export const useKbStore = defineStore('kb', () => {
       return `索引中 ${done}/${total || '?'}`
     }
     if (!p) return '检测中…'
-    if (!p.modelOk) return p.modelError || '未配置检索模型'
-    if (!p.config.enabled) return '已停用'
-    if (!p.totals.chunks) return p.staleTotal ? '待索引' : '尚无索引'
-    return `就绪 · ${p.totals.chunks.toLocaleString()} 片`
+    if (!p.model.ok) return p.model.error || '未配置检索模型'
+    if (!p.autoInject) return '自动引用已关闭'
+    if (!activeKbs.value.length) return p.staleTotal ? '待索引' : '尚无索引'
+    const n = activeKbs.value.length
+    return `就绪 · ${p.totals.chunks.toLocaleString()} 片 · ${n} 库`
   })
 
   function applyStatus(s: KbStatus | null) {
@@ -77,9 +84,19 @@ export const useKbStore = defineStore('kb', () => {
     void refresh()
   }
 
-  async function setEnabled(v: boolean) {
-    if (payload.value) payload.value.config.enabled = v   // 乐观更新，开关不闪
-    const next = await kbApi.setConfig({ enabled: v })
+  function applyResult(r: { ok: boolean; error?: string; config?: KbConfigPayload } | null, fallback = '操作失败') {
+    if (r && !r.ok) {
+      ElMessage.warning(r.error || fallback)
+      return false
+    }
+    if (r?.config) payload.value = r.config
+    else void refresh()
+    return true
+  }
+
+  async function setAutoInject(v: boolean) {
+    if (payload.value) payload.value.autoInject = v   // 乐观更新，开关不闪
+    const next = await kbApi.setConfig({ autoInject: v })
     if (next) payload.value = next
   }
 
@@ -90,47 +107,66 @@ export const useKbStore = defineStore('kb', () => {
       ElMessage.warning(picked.error)
       return
     }
-    const r = await kbApi.setModel(picked.path!)
-    if (r && !r.ok) {
-      ElMessage.warning(r.error || '模型设置失败')
-      return
-    }
-    if (r?.config) payload.value = r.config
-    else await refresh()
+    applyResult(await kbApi.setModel(picked.path!), '模型设置失败')
   }
 
-  async function addSource() {
-    const r = await kbApi.addSource()
+  // ============ 知识库 CRUD ============
+  async function createKb(name?: string) {
+    const r = await kbApi.create(name)
+    if (applyResult(r, '创建失败')) void refresh()
+  }
+
+  async function renameKb(kbId: string, name: string) {
+    applyResult(await kbApi.rename(kbId, name), '重命名失败')
+  }
+
+  async function deleteKb(kbId: string) {
+    applyResult(await kbApi.remove(kbId), '删除失败')
+  }
+
+  async function setKb(kbId: string, patch: KbItemPatch) {
+    // enabled 乐观更新：开关即时翻转，主进程确认后以快照为准
+    if (patch.enabled !== undefined && payload.value) {
+      const item = payload.value.kbs.find((k) => k.id === kbId)
+      if (item) item.enabled = patch.enabled
+    }
+    const r = await kbApi.setKb(kbId, patch)
+    if (r && !r.ok) {
+      ElMessage.warning(r.error || '设置失败')
+    }
+    if (r?.config) payload.value = r.config
+    else void refresh()
+  }
+
+  // ============ 来源与索引 ============
+  async function addSource(kbId: string) {
+    const r = await kbApi.addSource(kbId)
     if (!r || r.canceled) return
     if (r.error) {
       ElMessage.warning(r.error)
       return
     }
-    await refresh()
-    // 新来源尚无索引：直接增量建一遍（增量跑，已有来源的文件秒过）
-    void kbApi.reindex({})
+    if (r.config) payload.value = r.config
+    else void refresh()
+    // 新来源尚无索引：只对该库增量建一遍（其他库分片指纹未变，秒过）
+    void kbApi.reindex({ kbId })
   }
 
-  async function removeSource(dir: string) {
-    const r = await kbApi.removeSource(dir)
-    if (r && !r.ok) {
-      ElMessage.warning(r.error || '移除失败')
-      return
-    }
-    await refresh()
+  async function removeSource(kbId: string, dir: string) {
+    applyResult(await kbApi.removeSource(kbId, dir), '移除失败')
   }
 
-  async function reindex(opts?: { dir?: string; force?: boolean }) {
+  async function reindex(opts?: { kbId?: string; force?: boolean }) {
     const r = await kbApi.reindex(opts)
-    if (r && !r.started) ElMessage.warning('索引未启动：请先配置有效的检索模型')
+    if (r && !r.started) ElMessage.warning(r.error || '索引未启动：请先配置有效的检索模型')
   }
 
   async function cancelIndex() {
     await kbApi.cancelIndex()
   }
 
-  async function openIndexDir() {
-    const r = await kbApi.openIndexDir()
+  async function openIndexDir(kbId?: string) {
+    const r = await kbApi.openIndexDir(kbId)
     if (r && r.error) ElMessage.warning(r.error)
   }
 
@@ -170,7 +206,7 @@ export const useKbStore = defineStore('kb', () => {
 
   // 检索结果 → 注入块（合并进 system 消息；明确「优先依据 + 无关忽略」补偿与问题的距离）
   function buildBlock(hits: KbHit[]): string {
-    const budget = payload.value?.config.injectCharBudget || 6000
+    const budget = payload.value?.injectCharBudget || 6000
     const lines = ['--- 知识库检索（参考资料：回答时优先依据以下内容；与问题无关请忽略，不要虚构资料外的事实）---']
     let used = 0
     hits.forEach((h, i) => {
@@ -185,9 +221,11 @@ export const useKbStore = defineStore('kb', () => {
   }
 
   return {
-    status, payload, progress,
-    enabled, modelOk, chunkTotal, ready, indexing, dot, statusText,
-    bind, refresh, setEnabled, pickAndSetModel, addSource, removeSource, reindex, cancelIndex, openIndexDir,
+    status, payload, progress, managerOpen,
+    autoInject, modelOk, chunkTotal, activeKbs, ready, indexing, dot, statusText,
+    bind, refresh, setAutoInject, pickAndSetModel,
+    createKb, renameKb, deleteKb, setKb,
+    addSource, removeSource, reindex, cancelIndex, openIndexDir,
     retrieveForChat,
   }
 })
