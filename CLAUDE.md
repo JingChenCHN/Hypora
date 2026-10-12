@@ -37,6 +37,44 @@ Markdown 写作者（技术 / 知识工作者），桌面端专注写作；中�
 - 应用 UI 与官网落地页（`hypora-site`）共用同一套冷淡单色设计语言：同 token、同方角、同发丝线、同衬线。
 - 改动 UI 时对照 `.impeccable.md` 的 token 决策，保证与落地页观感一致，不出现两套视觉。
 
+# 知识库（本地 RAG，Electron 桌面专属）
+
+**完全自研的手写 RAG**（无 LangChain / LlamaIndex），唯一外部依赖是 llama.cpp 的 `llama-server` 二进制（GGUF 嵌入推理）。Web 版无此功能，全链路 `hasKnowledge()` 门控。
+
+## 架构分层
+
+| 层 | 实现 | 位置 |
+|---|---|---|
+| 推理 | spawn `llama-server --embedding --pooling mean`（CPU），端口池 8910-8919，OpenAI 兼容 `/v1/embeddings`，批 8 条 | `electron-kb.cjs` |
+| 分块 | `chunkMarkdown`：标题切段带面包屑、段落打包 900 字、超长按句切、围栏代码块原子不切 | `electron-kb-lib.cjs` |
+| 存储 | JSON 分片，一路一文件（sha1 命名），base64 Float32 + L2 归一化 | `electron-kb-lib.cjs` |
+| 检索 | 暴力余弦（归一化后退化为点积）+ minScore 过滤 + 多库 `mergeKbHits` 合并 | `electron-kb-lib.cjs` |
+| 编排 | 增量指纹（文件 mtime/size + 模型 size/mtime + dim + 版本，任一不符即重建）、staging→publish 原子发布、全局单飞 | `electron-kb.cjs` |
+
+## 多知识库（v2）
+
+- `kb.json` v2：嵌入模型**全局共用**（一个 GGUF + 一个 llama-server），`kbs[]` 各库独立 `enabled/topK/chunkChars/minScore/sources`；索引按库分目录 `index/<kbId>/`；v1 自动迁移为「默认知识库」（幂等）
+- 检索：全部启用库一起查——各库按自身 topK/minScore 截取后 `mergeKbHits` 全局合并（防大库淹没小库），命中带 `kbId/kbName`
+- 互斥：索引中删库/换模型/移除来源一律拒绝；换模型或维度变化清全部库索引；`chunkChars` 变更仅清该库
+- 管理 UI：`KnowledgeManager.vue`（640px 抽屉大栏目），取代 KnowledgeDialog（已删）；入口：Toolbar 文件菜单 / 原生菜单 / AIPanel「管理」，共享 `kbStore.managerOpen`
+
+## 不变量（改动前先确认）
+
+- 聊天安全参数：检索预算 6000ms、冷却 60s、单条截断 1200 字、注入预算 `injectCharBudget`（全局）；`retrieveForChat` 签名与 `ChatMessage.kbNote` 持久化结构不变（向后兼容）
+- 索引/分片均为 lib 纯函数，`electron-kb.cjs`（主进程编排）与 `scripts/kb-harness.cjs`（测试）共用
+
+## 测试
+
+- `node scripts/kb-harness.cjs`：纯 Node 状态机测试（服务器跑不了 llama.cpp，GLIBC 太老），覆盖迁移/CRUD/合并/短路等 ~37 例
+- `KB_LIVE=1 KB_MODEL=<真实gguf>` 真实端到端双库链路，仅在 Windows 上跑
+
+## 设计取舍与升级路径
+
+- **不上框架**：桌面 app 要零安装/零服务/离线可用，框架的向量存储全接外部 DB（Chroma/FAISS/pgvector）；独立 llama-server 进程绕开 node-llama-cpp 的 Electron ABI/native 编译坑；编排仅 4 步，框架是负担
+- **对齐业界**：OpenAI 兼容 embedding API（换模型不改管线）；EmbeddingGemma 官方 prompt 前缀（`task: search result | query:`，其他模型退化纯文本）；L2 归一化 + 点积
+- **量级边界**：暴力扫描 1 万 chunk 毫秒级，10 万 chunk 数百毫秒
+- **升级路径**（触发才做，存储/检索皆纯函数可单独替换）：量级上来 → sqlite-vec（单文件无服务）或 usearch；查函数名/报错码等精确词不准 → SQLite FTS5 关键词路做混合检索；质量仍不够 → 本地 reranker GGUF
+
 # 本机是生产服务器
 
 本机（`admin`，Linux，位于 `/home/hemo/Hypora`）就是生产服务器，项目即部署源码。开发、构建、部署都在此完成，改完可直接更新线上站点。
