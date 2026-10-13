@@ -391,10 +391,14 @@ async function start() {
   phase = 'failed'
   pid = null
   startedAt = null
-  error = '启动失败（Vulkan 与 CPU 均不可用）：' + usable.map((b) => {
+  const detail = '启动失败（Vulkan 与 CPU 均不可用）：' + usable.map((b) => {
     const tail = tailLogs(b, 3).join(' / ') || '(无输出)'
     return `[${b}] ${attempts[b] || '未知原因'}；日志末尾: ${tail}`
   }).join('；')
+  // llama.cpp 对不认识的 GGUF 架构统一报 "unknown model architecture"——给出可行动的提示
+  error = /unknown model architecture/i.test(detail)
+    ? '聊天模型架构不被内置引擎支持（内置 llama.cpp 过旧，或该 GGUF 非官方转换）。请换用受支持的模型，或更新 Hypora 以获取新引擎。' + detail
+    : detail
   pushStatus()
   log('ERROR', error)
   return snapshot()

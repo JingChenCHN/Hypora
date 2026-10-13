@@ -481,9 +481,7 @@ function onDimProbed(dim) {
 const PROBE_PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
 async function probeImageEmbedding(port_) {
   try {
-    const r = await postJson(port_, '/v1/embeddings', {
-      input: [[{ type: 'image_url', image_url: { url: `data:image/png;base64,${PROBE_PNG_B64}` } }]],
-    }, 20_000)
+    const r = await postJson(port_, '/v1/embeddings', imageEmbedBody(`data:image/png;base64,${PROBE_PNG_B64}`), 20_000)
     const v = vecFromEntry(r && r.data && r.data[0])
     if (!v || !v.length) throw new Error('嵌入响应无向量数据')
     log('INFO', `图片嵌入探测通过（dim=${v.length}）`)
@@ -531,10 +529,14 @@ async function start() {
   phase = 'failed'
   pid = null
   startedAt = null
-  error = '启动失败（CPU 与 Vulkan 均不可用）：' + usable.map((b) => {
+  const detail = '启动失败（CPU 与 Vulkan 均不可用）：' + usable.map((b) => {
     const tail = tailLogs(b, 3).join(' / ') || '(无输出)'
     return `[${b}] ${attempts[b] || '未知原因'}；日志末尾: ${tail}`
   }).join('；')
+  // llama.cpp 对不认识的 GGUF 架构统一报 "unknown model architecture"——给出可行动的提示
+  error = /unknown model architecture/i.test(detail)
+    ? '嵌入模型架构不被内置引擎支持（内置 llama.cpp 过旧，或该 GGUF 非官方转换）。请换用受支持的嵌入模型，或更新 Hypora 以获取新引擎。' + detail
+    : detail
   pushStatus()
   log('ERROR', error)
   return snapshot()
@@ -560,7 +562,8 @@ async function ensureRunning(waitMs = 0) {
     if (phase === 'failed' || phase === 'stopped') {
       // failed = 两后端均败；stopped = MODEL_MISSING 或被停止
       const err = new Error(error || '嵌入服务未运行')
-      err.code = error && error.includes('模型') ? 'MODEL_MISSING' : 'START_FAILED'
+      // 仅真正的模型缺失/无效归 MODEL_MISSING（渲染层据此弹配置引导），其余启动失败一律 START_FAILED
+      err.code = error && /未配置检索模型|模型文件不存在|不是有效的 GGUF/.test(error) ? 'MODEL_MISSING' : 'START_FAILED'
       return { ok: false, error: err.message, code: err.code }
     }
     await new Promise((r) => setTimeout(r, 150))
@@ -628,14 +631,16 @@ async function embedTexts(baseUrl, texts) {
 }
 
 // ============ 图片嵌入（多模态） ============
-// 请求格式单点收敛：OpenAI content-parts 约定（image_url data URL）。服务端不支持/格式不符
-// ⇒ 抛错（调用方按 skipped 处理，文本链路不受影响）；格式调整只改此函数。
+// 请求格式单点收敛：OpenAI content-parts 约定（image_url data URL），外层按 llama.cpp
+// /v1/embeddings 约定包 { content: [...] }（b11580 起 parts 必须置于 input 项的 content 字段）。
+// 服务端不支持/格式不符 ⇒ 抛错（调用方按 skipped 处理，文本链路不受影响）；格式调整只改此函数。
+function imageEmbedBody(url) {
+  return { input: [{ content: [{ type: 'image_url', image_url: { url } }] }] }
+}
 async function embedImages(baseUrl, dataUrls) {
   const out = []
   for (const url of dataUrls) {
-    const r = await postJson(new URL(baseUrl).port, '/v1/embeddings', {
-      input: [[{ type: 'image_url', image_url: { url } }]],
-    }, EMBED_TIMEOUT_MS * 2)   // 视觉塔首图含加载开销
+    const r = await postJson(new URL(baseUrl).port, '/v1/embeddings', imageEmbedBody(url), EMBED_TIMEOUT_MS * 2)   // 视觉塔首图含加载开销
     const v = vecFromEntry(r && r.data && r.data[0])
     if (!v || !v.length) throw new Error('图片嵌入响应无向量数据')
     out.push(lib.normalizeVec(v))

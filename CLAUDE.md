@@ -41,12 +41,14 @@ Markdown 写作者（技术 / 知识工作者），桌面端专注写作；中�
 
 **完全自研的手写 RAG**（无 LangChain / LlamaIndex），唯一外部依赖是 llama.cpp 的 `llama-server` 二进制（GGUF 嵌入推理）。Web 版无此功能，全链路 `hasKnowledge()` 门控。
 
+> 引擎版本由 `scripts/fetch-llamacpp.cjs` 的 `LLAMA_TAG` 决定（现为 **b11580**），与聊天引擎共用同一套 `ai-engine/` 二进制。升级动机通常是引擎不认识新模型的 GGUF 架构（报 `unknown model architecture`，如 EmbeddingGemma 2 的 `gemma-embedding2` 需要 ≥ 加该 arch 的 tag）——bump tag 即可，脚本按 `manifest.tag` 感知变更自动清旧产物重拉。
+
 ## 架构分层
 
 | 层 | 实现 | 位置 |
 |---|---|---|
 | 推理 | spawn `llama-server --embedding --pooling mean`（CPU），端口池 8910-8919，OpenAI 兼容 `/v1/embeddings`，批 8 条 | `electron-kb.cjs` |
-| 多模态 | 可选视觉投影器（mmproj）：服务启动带 `--mmproj`；图片（png/jpg/jpeg/webp/gif/bmp）走 content-parts 格式 `embedImages()`（批 1，**唯一格式收敛点**）；就绪后 1×1 PNG 探针自证可用性，失败降级纯文本 | `electron-kb.cjs` |
+| 多模态 | 可选视觉投影器（mmproj）：服务启动带 `--mmproj`；图片（png/jpg/jpeg/webp/gif/bmp）走 content-parts 格式（外层包 `{content:[...]}`，b11580 起的 /v1/embeddings 约定）`imageEmbedBody()`（批 1，**唯一格式收敛点**，探针与 `embedImages()` 共用）；就绪后 1×1 PNG 探针自证可用性，失败降级纯文本 | `electron-kb.cjs` |
 | 分块 | `chunkMarkdown`：标题切段带面包屑、段落打包 900 字、超长按句切、围栏代码块原子不切；图片不切块（一枚一分片） | `electron-kb-lib.cjs` |
 | 存储 | JSON 分片，一路一文件（sha1 命名），base64 Float32 + L2 归一化；图片分片 `kind:'image'` + `mprojSize/mprojMtimeMs` 指纹 | `electron-kb-lib.cjs` |
 | 检索 | 暴力余弦（归一化后退化为点积）+ minScore 过滤 + 多库 `mergeKbHits` 合并；命中带 `kind:'image'|'text'` | `electron-kb-lib.cjs` |
@@ -72,11 +74,11 @@ Markdown 写作者（技术 / 知识工作者），桌面端专注写作；中�
 
 - 聊天安全参数：检索预算 6000ms、冷却 60s、单条截断 1200 字、注入预算 `injectCharBudget`（全局）；`retrieveForChat` 签名与 `ChatMessage.kbNote` 持久化结构不变（向后兼容）
 - 索引/分片均为 lib 纯函数，`electron-kb.cjs`（主进程编排）与 `scripts/kb-harness.cjs`（测试）共用
-- 多模态：图片请求格式只改 `embedImages()` 一处；探针绝不阻塞/失败启动；mmproj 指纹仅参与 `kind==='image'` 分片判定
+- 多模态：图片请求格式只改 `imageEmbedBody()` 一处（探针与 `embedImages()` 共用）；探针绝不阻塞/失败启动；mmproj 指纹仅参与 `kind==='image'` 分片判定
 
 ## 测试
 
-- `node scripts/kb-harness.cjs`：纯 Node 状态机测试（服务器跑不了 llama.cpp，GLIBC 太老），覆盖迁移/CRUD/合并/短路/多模态门控等 45 例
+- `node scripts/kb-harness.cjs`：纯 Node 状态机测试（服务器跑不了 llama.cpp，GLIBC 太老），覆盖迁移/CRUD/合并/短路/多模态门控等 46 例
 - `KB_LIVE=1 KB_MODEL=<真实gguf> [KB_MMPROJ=<mmproj.gguf>]` 真实端到端（图文混合索引/探针/命中样例），仅在 Windows 上跑
 - harness 直写分片需模块重载才可见（published 每进程只扫一次磁盘，staging→publish 是生产写入口）
 

@@ -6,10 +6,14 @@
  *   - Windows 产物进 electron-builder extraResources（ai-engine/win-x64/{vulkan,cpu}）
  *   - Linux 产物供本机 harness（scripts/ai-engine-harness.cjs）驱动主进程逻辑
  *
- * 资产名 / 内部结构均为 2026-09 对 b10872 release 的实测：
+ * 资产名 / 内部结构均为 2026-09 对 b10872 release 的实测（2026-10 复核 b11580 资产名不变）：
  *   - win zip 内容**完全扁平**（llama-server.exe 与各 DLL 在 zip 根，无 build/bin 前缀）
  *   - linux 为 tar.gz，内含单层顶层目录
  *   - 两种后端 DLL 集不同，必须分目录存放，不可混放
+ *
+ * 升级 LLAMA_TAG 的动机：引擎必须认识新模型的 GGUF 架构（如 EmbeddingGemma 2 的
+ * `gemma-embedding2`，b10872 不识别，启动即报 unknown model architecture）。
+ * 换 tag 后本脚本按 manifest.tag 感知变更，自动清空旧产物重新拉取（新旧 DLL 混放会加载失败）。
  *
  * 用法：
  *   node scripts/fetch-llamacpp.cjs                 # 默认拉取当前平台
@@ -28,7 +32,7 @@ const path = require('path')
 const https = require('https')
 const { execFileSync } = require('child_process')
 
-const LLAMA_TAG = 'b10872'
+const LLAMA_TAG = 'b11580'
 const RELEASE_BASE = `https://github.com/ggml-org/llama.cpp/releases/download/${LLAMA_TAG}`
 
 // 下载源前缀依次回落：''直连 → 自定义镜像（HYPORA_LLAMA_MIRROR）→ 公共 gh 镜像（国内网络）
@@ -39,7 +43,7 @@ const MIRROR_PREFIXES = [
   'https://gh-proxy.com/',
 ].filter((p) => p !== null)
 
-// 平台 → 后端 → 资产文件名（b10872 实测清单）
+// 平台 → 后端 → 资产文件名（b10872/b11580 实测清单，命名规则未变）
 const ASSETS = {
   'win-x64': {
     vulkan: `llama-${LLAMA_TAG}-bin-win-vulkan-x64.zip`,
@@ -118,11 +122,17 @@ async function fetchOne(platform, backend, assetName) {
   const targetDir = path.join(AI_DIR, platform, backend)
   fs.mkdirSync(targetDir, { recursive: true })
   if (SKIP_DOWNLOAD) return
-  // 幂等：目标二进制已存在则跳过（构建链可反复调用而不重复下载）
-  const markerNow = process.platform === 'win32' || platform === 'win-x64' ? 'llama-server.exe' : 'llama-server'
-  if (fs.existsSync(path.join(targetDir, markerNow))) {
-    log(`${platform}/${backend} 已存在，跳过下载`)
+  const marker = process.platform === 'win32' || platform === 'win-x64' ? 'llama-server.exe' : 'llama-server'
+  // 幂等 + 版本感知：二进制已存在且 manifest.tag 与当前 LLAMA_TAG 一致才跳过；
+  // 换 tag 必须重拉，且先清空目录——新旧版本 DLL 混放会导致引擎加载失败
+  if (manifest.tag === LLAMA_TAG && fs.existsSync(path.join(targetDir, marker))) {
+    log(`${platform}/${backend} 已存在（${LLAMA_TAG}），跳过下载`)
     return
+  }
+  if (manifest.tag !== LLAMA_TAG) {
+    log(`${platform}/${backend} 引擎版本 ${manifest.tag || '(未知)'} → ${LLAMA_TAG}，清空旧产物重新拉取`)
+    fs.rmSync(targetDir, { recursive: true, force: true })
+    fs.mkdirSync(targetDir, { recursive: true })
   }
 
   const archivePath = path.join(os.tmpdir(), `hypora-${assetName}`)
@@ -145,10 +155,10 @@ async function fetchOne(platform, backend, assetName) {
   extract(archivePath, targetDir)
   fs.rmSync(archivePath, { force: true })
 
-  const marker = process.platform === 'win32' || platform === 'win-x64' ? 'llama-server.exe' : 'llama-server'
   if (!fs.existsSync(path.join(targetDir, marker))) {
     throw new Error(`解压后未找到 ${marker}（${targetDir}）`)
   }
+  manifest.tag = LLAMA_TAG   // 拉取成功才刷新 tag：下次运行据此判定可跳过
   log(`  ✓ ${targetDir}`)
 }
 
