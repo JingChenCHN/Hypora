@@ -49,6 +49,7 @@ const DEFAULT_GLOBAL = {
   mprojSize: null,       // mmproj 指纹（图片分片增量判定用，文本分片不校验）
   mprojMtimeMs: null,
   autoInject: true,
+  autoStart: false,      // 应用启动时自动拉起嵌入服务（默认关，保持按需启动）
   injectCharBudget: 6000,
   lastPort: null,
 }
@@ -138,6 +139,7 @@ function fillConfig(raw) {
     if (raw[k] != null) g[k] = raw[k]
   }
   if (typeof raw.autoInject === 'boolean') g.autoInject = raw.autoInject
+  if (typeof raw.autoStart === 'boolean') g.autoStart = raw.autoStart
   if (raw.injectCharBudget != null) g.injectCharBudget = clamp(raw.injectCharBudget, 1000, 12000, DEFAULT_GLOBAL.injectCharBudget)
   const list = Array.isArray(raw.kbs) ? raw.kbs : []
   g.kbs = list.map((k, i) => ({
@@ -1094,6 +1096,7 @@ function getConfig() {
     model,
     binaries: { vulkan: fs.existsSync(exePathOf('vulkan')), cpu: fs.existsSync(exePathOf('cpu')) },
     autoInject: cfg.autoInject !== false,
+    autoStart: cfg.autoStart === true,
     injectCharBudget: cfg.injectCharBudget,
     indexDir: indexDir(),
     indexing,
@@ -1109,6 +1112,7 @@ function getConfig() {
 function setConfig(patch) {
   const clean = {}
   if (patch && typeof patch.autoInject === 'boolean') clean.autoInject = patch.autoInject
+  if (patch && typeof patch.autoStart === 'boolean') clean.autoStart = patch.autoStart
   if (patch && patch.injectCharBudget != null) clean.injectCharBudget = clamp(patch.injectCharBudget, 1000, 12000, DEFAULT_GLOBAL.injectCharBudget)
   writeKbJson(clean)
   return getConfig()
@@ -1380,6 +1384,11 @@ function initKnowledgeBase(loggerFn) {
     handle('kb:set-model', (_e, p) => setModel(p))
     handle('kb:pick-mmproj', () => pickMmproj())
     handle('kb:set-mmproj', (_e, p) => setMmproj(p))
+    // 手动启停嵌入服务（start 幂等；模型缺失 → MODEL_MISSING 走 error，不抛给渲染层）
+    handle('kb:start-service', async () => {
+      try { await start(); return { ok: true } } catch (e) { return { ok: false, error: e.message } }
+    })
+    handle('kb:stop-service', () => { stop(); return { ok: true } })
     handle('kb:add-source', (_e, kbId) => addSource(kbId))
     handle('kb:remove-source', (_e, kbId, dir) => removeSource(kbId, dir))
     handle('kb:reindex', (_e, opts) => { reindex(opts || {}).catch(() => {}); return { started: true } })

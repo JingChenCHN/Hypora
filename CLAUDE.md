@@ -57,7 +57,8 @@ Markdown 写作者（技术 / 知识工作者），桌面端专注写作；中�
 - `kb.json` v2：嵌入模型**全局共用**（一个 GGUF + 一个 llama-server），`kbs[]` 各库独立 `enabled/topK/chunkChars/minScore/sources`；索引按库分目录 `index/<kbId>/`；v1 自动迁移为「默认知识库」（幂等）
 - 检索：全部启用库一起查——各库按自身 topK/minScore 截取后 `mergeKbHits` 全局合并（防大库淹没小库），命中带 `kbId/kbName`
 - 互斥：索引中删库/换模型/移除来源一律拒绝；换模型或维度变化清全部库索引；`chunkChars` 变更仅清该库
-- 管理 UI：`KnowledgeManager.vue`（640px 抽屉大栏目），取代 KnowledgeDialog（已删）；入口：Toolbar 文件菜单 / 原生菜单 / AIPanel「管理」，共享 `kbStore.managerOpen`
+- 管理 UI：`KnowledgeManager.vue` **全屏管理页**（Teleport 覆盖层，z-index 500，类 ima）；入口：Toolbar 顶部「知识库」菜单 / 原生「知识库」菜单（Ctrl+K）/ AIPanel「管理」，共享 `kbStore.managerOpen`；单库参数（topK/chunkChars/minScore）走卡片「参数」弹层
+- 嵌入服务：默认按需懒启动（query/reindex 拉起）；管理页可手动启动/停止（`kb:start-service` / `kb:stop-service`，`startService` 前端 fire-and-forget、phase 由 kb-status 推送驱动）；`autoStart` 全局配置控制应用启动时自动拉起（默认关）
 
 ## 多模态（可选 mmproj）
 

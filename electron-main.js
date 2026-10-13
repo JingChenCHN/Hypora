@@ -389,9 +389,18 @@ function createMenu() {
         { type: 'separator' },
         { label: '偏好设置', click: () => mainWindow.webContents.send('menu-action', 'preference-settings') },
         { label: '开发者模式', click: () => mainWindow.webContents.send('menu-action', 'dev-mode') },
-        { label: '知识库管理', click: () => mainWindow.webContents.send('menu-action', 'kb-manage') },
         { type: 'separator' },
         { label: '退出', accelerator: 'Alt+F4', click: () => app.quit() }
+      ]
+    },
+    {
+      label: '知识库',
+      submenu: [
+        { label: '知识库管理', accelerator: 'Ctrl+K', click: () => mainWindow.webContents.send('menu-action', 'kb-manage') },
+        { label: '新建知识库', click: () => mainWindow.webContents.send('menu-action', 'kb-create') },
+        { type: 'separator' },
+        { label: '全部重新索引', click: () => mainWindow.webContents.send('menu-action', 'kb-reindex-all') },
+        { label: '打开索引目录', click: () => mainWindow.webContents.send('menu-action', 'kb-open-index') }
       ]
     },
     {
@@ -839,6 +848,8 @@ app.whenReady().then(() => {
   // 内置助手：本地已有模型则顺带拉起引擎（Vulkan→CPU 自动回落）。
   // 模型缺失时静默跳过（MODEL_MISSING 由渲染层面板引导下载）；状态经 ai-engine-status 推送。
   aiEngine.start().catch(() => {})
+  // 知识库嵌入服务：用户开启「自动启动」时随应用拉起（模型缺失时 start 抛 MODEL_MISSING，静默）
+  try { if (kb.getConfig().autoStart) kb.start().catch(() => {}) } catch { /* 配置读取失败不阻断启动 */ }
 })
 
 app.on('before-quit', () => { quitting = true })

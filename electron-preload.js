@@ -62,6 +62,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   kbSetModel: (modelPath) => ipcRenderer.invoke('kb:set-model', modelPath),
   kbPickMmproj: () => ipcRenderer.invoke('kb:pick-mmproj'),
   kbSetMmproj: (p) => ipcRenderer.invoke('kb:set-mmproj', p),
+  kbStartService: () => ipcRenderer.invoke('kb:start-service'),
+  kbStopService: () => ipcRenderer.invoke('kb:stop-service'),
   kbAddSource: (kbId) => ipcRenderer.invoke('kb:add-source', kbId),
   kbRemoveSource: (kbId, dir) => ipcRenderer.invoke('kb:remove-source', kbId, dir),
   kbReindex: (opts) => ipcRenderer.invoke('kb:reindex', opts),

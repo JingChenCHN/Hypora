@@ -77,12 +77,34 @@
             <div class="menu-group" @click="runFileCommand('preferenceSettings')">
               <el-icon><Setting /></el-icon><span>偏好设置</span>
             </div>
-            <!-- 知识库大栏目（桌面端本地 RAG；Web/Tauri 无 kb* API 不渲染） -->
-            <div v-if="hasKnowledge()" class="menu-group" @click="runFileCommand('kbManage')">
-              <el-icon><Collection /></el-icon><span>知识库管理</span>
-            </div>
             <div class="menu-group" @click="runFileCommand('devMode')">
               <el-icon><Tools /></el-icon><span>开发者模式</span>
+            </div>
+          </div>
+        </Transition>
+      </div>
+
+      <!-- 知识库顶级入口（桌面端本地 RAG；Web/Tauri 无 kb* API 不渲染） -->
+      <div v-if="hasKnowledge()" class="file-menu" ref="kbMenuRef">
+        <el-button text class="toolbar-btn" @click="kbMenuOpen = !kbMenuOpen">
+          <el-icon><Collection /></el-icon>
+          <span>知识库</span>
+          <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+        </el-button>
+        <Transition name="menu-pop">
+          <div v-if="kbMenuOpen" class="file-menu-panel">
+            <div class="menu-group" @click="runKbCommand('manage')">
+              <el-icon><Collection /></el-icon><span>知识库管理</span>
+            </div>
+            <div class="menu-group" @click="runKbCommand('create')">
+              <el-icon><DocumentAdd /></el-icon><span>新建知识库</span>
+            </div>
+            <div class="menu-sep" />
+            <div class="menu-group" @click="runKbCommand('reindex')">
+              <el-icon><Refresh /></el-icon><span>全部重新索引</span>
+            </div>
+            <div class="menu-group" @click="runKbCommand('openIndex')">
+              <el-icon><FolderOpened /></el-icon><span>打开索引目录</span>
             </div>
           </div>
         </Transition>
@@ -284,12 +306,13 @@
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useDocumentStore } from '@/stores/document'
 import { useAIStore } from '@/stores/ai'
+import { useKbStore } from '@/stores/kb'
 import { hasAiEngine } from '@/utils/aiEngine'
 import { hasKnowledge } from '@/utils/knowledge'
 import {
   Document, ArrowDown, ArrowRight, DocumentAdd, FolderOpened, Download, DocumentCopy, Files, Picture, PictureFilled,
   Postcard, MagicStick, Grid, ChatDotSquare, List, Select, Link, Minus, Top,
-  Search, Sunny, Moon, Coffee, Brush, Pouring, Menu, FullScreen, Cloudy, Upload, Box, Setting, Tools, Collection
+  Search, Sunny, Moon, Coffee, Brush, Pouring, Menu, FullScreen, Cloudy, Upload, Box, Setting, Tools, Collection, Refresh
 } from '@element-plus/icons-vue'
 import { readMdFile, readPdfFile } from '@/utils/export'
 import TrafficLights from './TrafficLights.vue'
@@ -306,6 +329,7 @@ const emit = defineEmits<{
 
 const docStore = useDocumentStore()
 const aiStore = useAIStore()
+const kbStore = useKbStore()
 
 // 内置助手徽标：仅桌面端有引擎且用户选了 local 提供方时显示状态点；tooltip 同步引擎状态
 const showAiDot = computed(() => hasAiEngine() && aiStore.provider === 'local')
@@ -319,10 +343,12 @@ const toolbarHover = ref(true)
 const isAlwaysOnTop = ref(false)
 const ib64Visible = ref(false)
 
-// 文件分组菜单（新建/打开/保存/导出/偏好设置/开发者模式）
+// 文件分组菜单（新建/打开/保存/导出/偏好设置/开发者模式）+ 知识库顶级菜单
 const fileMenuRef = ref<HTMLDivElement>()
 const fileMenuOpen = ref(false)
 const expandedGroup = ref('')
+const kbMenuRef = ref<HTMLDivElement>()
+const kbMenuOpen = ref(false)
 
 function toggleGroup(name: string) {
   expandedGroup.value = expandedGroup.value === name ? '' : name
@@ -333,19 +359,47 @@ function closeFileMenu() {
   expandedGroup.value = ''
 }
 
+function closeKbMenu() {
+  kbMenuOpen.value = false
+}
+
 function runFileCommand(command: string) {
   closeFileMenu()
   handleFileCommand(command)
+}
+
+// 知识库菜单：直调 kbStore（与「新建」直调 docStore 同模式）
+function runKbCommand(command: 'manage' | 'create' | 'reindex' | 'openIndex') {
+  closeKbMenu()
+  switch (command) {
+    case 'manage':
+      kbStore.managerOpen = true
+      break
+    case 'create':
+      kbStore.managerOpen = true
+      void kbStore.createKb()
+      break
+    case 'reindex':
+      void kbStore.reindex({})
+      break
+    case 'openIndex':
+      void kbStore.openIndexDir()
+      break
+  }
 }
 
 function onDocClick(e: MouseEvent) {
   if (fileMenuOpen.value && fileMenuRef.value && !fileMenuRef.value.contains(e.target as Node)) {
     closeFileMenu()
   }
+  if (kbMenuOpen.value && kbMenuRef.value && !kbMenuRef.value.contains(e.target as Node)) {
+    closeKbMenu()
+  }
 }
 
 function onGlobalKeydown(e: KeyboardEvent) {
   if (e.key === 'Escape' && fileMenuOpen.value) closeFileMenu()
+  if (e.key === 'Escape' && kbMenuOpen.value) closeKbMenu()
 }
 
 onMounted(async () => {

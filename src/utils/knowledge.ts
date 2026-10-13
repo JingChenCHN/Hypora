@@ -81,6 +81,7 @@ export interface KbConfigPayload {
   model: KbModel
   binaries: { vulkan: boolean; cpu: boolean }
   autoInject: boolean
+  autoStart: boolean        // 应用启动时自动拉起嵌入服务
   injectCharBudget: number
   indexDir: string
   indexing: boolean
@@ -123,7 +124,7 @@ export interface KbQueryResult {
 export type KbItemPatch = Partial<Pick<KbItem, 'enabled' | 'topK' | 'chunkChars' | 'minScore'>>
 
 // 全局可改字段（kb:set-config 的 patch）
-export type KbGlobalPatch = Partial<Pick<KbConfigPayload, 'autoInject' | 'injectCharBudget'>>
+export type KbGlobalPatch = Partial<Pick<KbConfigPayload, 'autoInject' | 'autoStart' | 'injectCharBudget'>>
 
 // 配置变更类 IPC 的统一返回（携带刷新后的快照）
 export interface KbConfigResult {
@@ -144,6 +145,8 @@ interface ElectronKbApi {
   kbSetModel(modelPath: string): Promise<KbConfigResult>
   kbPickMmproj(): Promise<{ canceled: boolean; path?: string; name?: string; size?: number; error?: string }>
   kbSetMmproj(p: string | null): Promise<KbConfigResult>
+  kbStartService(): Promise<{ ok: boolean; error?: string }>
+  kbStopService(): Promise<{ ok: boolean; error?: string }>
   kbAddSource(kbId: string): Promise<{ canceled: boolean; dir?: string; error?: string; config?: KbConfigPayload }>
   kbRemoveSource(kbId: string, dir: string): Promise<KbConfigResult>
   kbReindex(opts?: { kbId?: string; force?: boolean }): Promise<{ started: boolean; error?: string; cancelled?: boolean }>
@@ -179,6 +182,8 @@ export const kbApi = {
   setModel: (modelPath: string): Promise<KbConfigResult | null> => api()?.kbSetModel(modelPath) ?? Promise.resolve(null),
   pickMmproj: (): Promise<{ canceled: boolean; path?: string; name?: string; size?: number; error?: string } | null> => api()?.kbPickMmproj() ?? Promise.resolve(null),
   setMmproj: (p: string | null): Promise<KbConfigResult | null> => api()?.kbSetMmproj(p) ?? Promise.resolve(null),
+  startService: (): Promise<{ ok: boolean; error?: string } | null> => api()?.kbStartService() ?? Promise.resolve(null),
+  stopService: (): Promise<{ ok: boolean; error?: string } | null> => api()?.kbStopService() ?? Promise.resolve(null),
   addSource: (kbId: string): Promise<{ canceled: boolean; dir?: string; error?: string; config?: KbConfigPayload } | null> => api()?.kbAddSource(kbId) ?? Promise.resolve(null),
   removeSource: (kbId: string, dir: string): Promise<KbConfigResult | null> => api()?.kbRemoveSource(kbId, dir) ?? Promise.resolve(null),
   reindex: (opts?: { kbId?: string; force?: boolean }): Promise<{ started: boolean; error?: string; cancelled?: boolean } | null> => api()?.kbReindex(opts) ?? Promise.resolve(null),

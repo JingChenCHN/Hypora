@@ -26,7 +26,7 @@ export const useKbStore = defineStore('kb', () => {
   const status = ref<KbStatus | null>(null)
   const payload = ref<KbConfigPayload | null>(null)
   const progress = ref<KbProgress | null>(null)
-  // 知识库管理抽屉（大栏目）：跨组件开关——AIPanel「管理」、Toolbar 菜单、原生菜单都能打开
+  // 知识库全屏管理页：跨组件开关——AIPanel「管理」、Toolbar/原生「知识库」菜单都能打开
   const managerOpen = ref(false)
   let bound = false
   let retrievalBlockedUntil = 0
@@ -58,9 +58,33 @@ export const useKbStore = defineStore('kb', () => {
     if (!p) return '检测中…'
     if (!p.model.ok) return p.model.error || '未配置检索模型'
     if (!p.autoInject) return '自动引用已关闭'
+    if (status.value?.phase === 'failed') return '嵌入服务启动失败'
     if (!activeKbs.value.length) return p.staleTotal ? '待索引' : '尚无索引'
     const n = activeKbs.value.length
     return `就绪 · ${p.totals.chunks.toLocaleString()} 片 · ${n} 库`
+  })
+
+  // 嵌入服务状态行（管理页模型卡）：phase 驱动，镜像 aiStore.engineStatusText 的表达
+  const serviceText = computed(() => {
+    const phase = status.value?.phase ?? payload.value?.status?.phase ?? 'stopped'
+    if (payload.value && !payload.value.model.ok) return '未配置嵌入模型'
+    switch (phase) {
+      case 'running': {
+        const b = status.value?.backend
+        const port = status.value?.port
+        return [b === 'vulkan' ? 'GPU' : b === 'cpu' ? 'CPU' : null, port ? `:${port}` : null].filter(Boolean).join(' ') || '运行中'
+      }
+      case 'starting': return '启动中…'
+      case 'stopping': return '停止中…'
+      case 'failed': return '启动失败'
+      default: return '已停止'
+    }
+  })
+  const serviceDot = computed<'ok' | 'err' | 'off'>(() => {
+    const phase = status.value?.phase ?? payload.value?.status?.phase ?? 'stopped'
+    if (phase === 'running') return 'ok'
+    if (phase === 'failed') return 'err'
+    return 'off'
   })
 
   function applyStatus(s: KbStatus | null) {
@@ -98,6 +122,25 @@ export const useKbStore = defineStore('kb', () => {
     if (payload.value) payload.value.autoInject = v   // 乐观更新，开关不闪
     const next = await kbApi.setConfig({ autoInject: v })
     if (next) payload.value = next
+  }
+
+  async function setAutoStart(v: boolean) {
+    if (payload.value) payload.value.autoStart = v   // 乐观更新，开关不闪
+    const next = await kbApi.setConfig({ autoStart: v })
+    if (next) payload.value = next
+  }
+
+  // ============ 嵌入服务手动启停 ============
+  // 触发即返回（不 await）：start 可能要等 45s 健康超时，phase 变化由 kb-status 推送驱动 UI。
+  function startService() {
+    void kbApi.startService().then((r) => {
+      if (r && r.error) ElMessage.warning(r.error)
+    })
+  }
+
+  async function stopService() {
+    await kbApi.stopService()
+    void refresh()
   }
 
   async function pickAndSetModel() {
@@ -247,7 +290,9 @@ export const useKbStore = defineStore('kb', () => {
   return {
     status, payload, progress, managerOpen,
     autoInject, modelOk, chunkTotal, activeKbs, ready, indexing, dot, statusText,
-    bind, refresh, setAutoInject, pickAndSetModel, pickAndSetMmproj, clearMmproj,
+    serviceText, serviceDot,
+    bind, refresh, setAutoInject, setAutoStart, pickAndSetModel, pickAndSetMmproj, clearMmproj,
+    startService, stopService,
     createKb, renameKb, deleteKb, setKb,
     addSource, removeSource, reindex, cancelIndex, openIndexDir,
     retrieveForChat,

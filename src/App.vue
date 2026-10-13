@@ -359,6 +359,16 @@ function bootstrapEditor() {
         case 'kb-manage':
           kbStore.managerOpen = true
           break
+        case 'kb-create':
+          kbStore.managerOpen = true
+          void kbStore.createKb()
+          break
+        case 'kb-reindex-all':
+          void kbStore.reindex({})
+          break
+        case 'kb-open-index':
+          void kbStore.openIndexDir()
+          break
       }
     })
 

@@ -687,6 +687,18 @@ async function main() {
     assert.strictEqual(kb.snapshot().phase, 'stopped', '短路路径不应拉起服务')
   })
 
+  // —— autoStart：默认 false / setConfig 落盘 / 缺字段回退默认（零迁移） ——
+  await ta('autoStart 默认关闭 + setConfig 落盘 + 缺字段回退', async () => {
+    assert.strictEqual(kb.getConfig().autoStart, false, '默认应关闭')
+    const r = kb.setConfig({ autoStart: true })
+    assert.strictEqual(r.autoStart, true)
+    const onDisk = JSON.parse(fs.readFileSync(kbJsonPath, 'utf-8'))
+    assert.strictEqual(onDisk.autoStart, true, '应落盘 kb.json')
+    delete onDisk.autoStart
+    fs.writeFileSync(kbJsonPath, JSON.stringify(onDisk))
+    assert.strictEqual(kb.getConfig().autoStart, false, '缺失字段应回退默认 false')
+  })
+
   // ============ KB_LIVE=1：真实端到端（Windows 上选通） ============
   if (process.env.KB_LIVE === '1') {
     console.log('KB_LIVE end-to-end (multi-KB)')
