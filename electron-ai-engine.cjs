@@ -395,8 +395,9 @@ async function start() {
     const tail = tailLogs(b, 3).join(' / ') || '(无输出)'
     return `[${b}] ${attempts[b] || '未知原因'}；日志末尾: ${tail}`
   }).join('；')
-  // llama.cpp 对不认识的 GGUF 架构统一报 "unknown model architecture"——给出可行动的提示
-  error = /unknown model architecture/i.test(detail)
+  // llama.cpp 对不认识的 GGUF 架构统一报 "unknown model architecture"——给出可行动的提示。
+  // 该行出现在加载早期，末三行截不到，必须扫整个 ring（上限 200 行）
+  error = usable.some((b) => (ringBuf[b] || []).some((l) => /unknown model architecture/i.test(l)))
     ? '聊天模型架构不被内置引擎支持（内置 llama.cpp 过旧，或该 GGUF 非官方转换）。请换用受支持的模型，或更新 Hypora 以获取新引擎。' + detail
     : detail
   pushStatus()
